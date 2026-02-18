@@ -1,0 +1,7 @@
+TideDB is licensed under a dual MIT / Apache 2.0 license.
+
+Original InfluxDB code is copyright InfluxData, Inc. and licensed under the MIT License.
+New TideDB code is licensed under the Apache License, Version 2.0.
+
+See LICENSE-MIT for the full MIT License text.
+See LICENSE-APACHE for the full Apache License 2.0 text.
