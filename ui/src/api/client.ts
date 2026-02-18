@@ -25,12 +25,36 @@ export interface StatsResult {
   [key: string]: any;
 }
 
+export interface RemoteConnection {
+  url: string;
+  username: string;
+  password: string;
+}
+
 class TideDBClient {
   private baseUrl: string;
   private credentials: { username?: string; password?: string } = {};
+  private _standaloneMode = false;
+  private _remoteConnection: RemoteConnection | null = null;
 
   constructor() {
     this.baseUrl = '';
+  }
+
+  get standaloneMode() {
+    return this._standaloneMode;
+  }
+
+  setStandaloneMode(enabled: boolean) {
+    this._standaloneMode = enabled;
+  }
+
+  setRemoteConnection(conn: RemoteConnection | null) {
+    this._remoteConnection = conn;
+  }
+
+  getRemoteConnection(): RemoteConnection | null {
+    return this._remoteConnection;
   }
 
   setCredentials(username: string, password: string) {
@@ -38,6 +62,8 @@ class TideDBClient {
   }
 
   private getAuthParams(): string {
+    // In standalone mode with a remote connection, auth is handled via proxy headers.
+    if (this._standaloneMode && this._remoteConnection) return '';
     const params = new URLSearchParams();
     if (this.credentials.username) {
       params.set('u', this.credentials.username);
@@ -48,9 +74,26 @@ class TideDBClient {
     return params.toString();
   }
 
+  // Headers that tell the standalone proxy which InfluxDB instance to target.
+  private getProxyHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {};
+    if (this._standaloneMode && this._remoteConnection) {
+      headers['X-Influxdb-Url'] = this._remoteConnection.url;
+      if (this._remoteConnection.username) {
+        headers['X-Influxdb-Username'] = this._remoteConnection.username;
+      }
+      if (this._remoteConnection.password) {
+        headers['X-Influxdb-Password'] = this._remoteConnection.password;
+      }
+    }
+    return headers;
+  }
+
   async ping(): Promise<{ version: string; ok: boolean }> {
     try {
-      const res = await fetch(`${this.baseUrl}/ping`);
+      const res = await fetch(`${this.baseUrl}/ping`, {
+        headers: this.getProxyHeaders(),
+      });
       return {
         version: res.headers.get('X-Tidedb-Version') || res.headers.get('X-Influxdb-Version') || 'unknown',
         ok: res.status === 204,
@@ -74,7 +117,7 @@ class TideDBClient {
 
     const res = await fetch(`${this.baseUrl}/query?${params.toString()}`, {
       method: 'POST',
-      headers: { 'Accept': 'application/json' },
+      headers: { 'Accept': 'application/json', ...this.getProxyHeaders() },
     });
 
     if (!res.ok) {
@@ -100,6 +143,7 @@ class TideDBClient {
     const res = await fetch(`${this.baseUrl}/write?${params.toString()}`, {
       method: 'POST',
       body: data,
+      headers: this.getProxyHeaders(),
     });
 
     if (!res.ok && res.status !== 204) {
@@ -182,7 +226,9 @@ class TideDBClient {
   }
 
   async getDebugVars(): Promise<any> {
-    const res = await fetch(`${this.baseUrl}/debug/vars`);
+    const res = await fetch(`${this.baseUrl}/debug/vars`, {
+      headers: this.getProxyHeaders(),
+    });
     return res.json();
   }
 

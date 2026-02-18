@@ -8,7 +8,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { Activity, Server, HardDrive, Clock, Cpu, XCircle, RefreshCw } from 'lucide-react';
+import { Activity, Server, HardDrive, Clock, Cpu, XCircle, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { client } from '../api/client';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -240,6 +240,8 @@ export default function SystemHealth() {
   // Shard groups
   const [shardGroups, setShardGroups] = useState<ShardGroup[]>([]);
   const [shardGroupsLoading, setShardGroupsLoading] = useState(true);
+  const [sgPage, setSgPage] = useState(0);
+  const sgPerPage = 25;
 
   // Last updated timestamp and error state
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -698,61 +700,107 @@ export default function SystemHealth() {
                 <HardDrive className="w-8 h-8 mb-3 opacity-30" />
                 <p className="text-sm">No shard groups found.</p>
               </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead>
-                    <tr className="bg-gray-800 border-b border-gray-700">
-                      <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap w-16">
-                        ID
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap">
-                        Database
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap">
-                        Retention Policy
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap">
-                        Start Time
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap">
-                        End Time
-                      </th>
-                      <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap">
-                        Expiry Time
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {shardGroups.map((sg, idx) => (
-                      <tr
-                        key={`${sg.id}-${idx}`}
-                        className="border-b border-gray-700 last:border-0 hover:bg-gray-700/30 transition-colors duration-150"
-                      >
-                        <td className="px-4 py-3 font-mono text-gray-300 text-xs">
-                          {String(sg.id)}
-                        </td>
-                        <td className="px-4 py-3 font-mono text-blue-300 text-xs whitespace-nowrap">
-                          {sg.database || <span className="text-gray-600">—</span>}
-                        </td>
-                        <td className="px-4 py-3 font-mono text-gray-300 text-xs whitespace-nowrap">
-                          {sg.retentionPolicy || <span className="text-gray-600">—</span>}
-                        </td>
-                        <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
-                          {formatTimestamp(sg.startTime)}
-                        </td>
-                        <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
-                          {formatTimestamp(sg.endTime)}
-                        </td>
-                        <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
-                          {formatTimestamp(sg.expiryTime)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            ) : (() => {
+              const totalPages = Math.ceil(shardGroups.length / sgPerPage);
+              const page = Math.min(sgPage, totalPages - 1);
+              const pageItems = shardGroups.slice(page * sgPerPage, (page + 1) * sgPerPage);
+
+              return (
+                <>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead>
+                        <tr className="bg-gray-800 border-b border-gray-700">
+                          <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap w-16">
+                            ID
+                          </th>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap">
+                            Database
+                          </th>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap">
+                            Retention Policy
+                          </th>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap">
+                            Start Time
+                          </th>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap">
+                            End Time
+                          </th>
+                          <th className="px-4 py-3 text-left font-semibold text-gray-400 whitespace-nowrap">
+                            Expiry Time
+                          </th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pageItems.map((sg, idx) => (
+                          <tr
+                            key={`${sg.id}-${idx}`}
+                            className="border-b border-gray-700 last:border-0 hover:bg-gray-700/30 transition-colors duration-150"
+                          >
+                            <td className="px-4 py-3 font-mono text-gray-300 text-xs">
+                              {String(sg.id)}
+                            </td>
+                            <td className="px-4 py-3 font-mono text-blue-300 text-xs whitespace-nowrap">
+                              {sg.database || <span className="text-gray-600">—</span>}
+                            </td>
+                            <td className="px-4 py-3 font-mono text-gray-300 text-xs whitespace-nowrap">
+                              {sg.retentionPolicy || <span className="text-gray-600">—</span>}
+                            </td>
+                            <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
+                              {formatTimestamp(sg.startTime)}
+                            </td>
+                            <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
+                              {formatTimestamp(sg.endTime)}
+                            </td>
+                            <td className="px-4 py-3 text-gray-400 text-xs whitespace-nowrap">
+                              {formatTimestamp(sg.expiryTime)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* Pagination */}
+                  {totalPages > 1 && (
+                    <div className="flex items-center justify-between px-4 py-3 border-t border-gray-700">
+                      <span className="text-xs text-gray-500">
+                        {shardGroups.length.toLocaleString()} shard groups — page {page + 1} of {totalPages}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setSgPage(0)}
+                          disabled={page === 0}
+                          className="px-2 py-1 text-xs text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          First
+                        </button>
+                        <button
+                          onClick={() => setSgPage((p) => Math.max(0, p - 1))}
+                          disabled={page === 0}
+                          className="p-1 text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          <ChevronLeft size={14} />
+                        </button>
+                        <button
+                          onClick={() => setSgPage((p) => Math.min(totalPages - 1, p + 1))}
+                          disabled={page >= totalPages - 1}
+                          className="p-1 text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          <ChevronRight size={14} />
+                        </button>
+                        <button
+                          onClick={() => setSgPage(totalPages - 1)}
+                          disabled={page >= totalPages - 1}
+                          className="px-2 py-1 text-xs text-gray-400 hover:text-white bg-gray-700 hover:bg-gray-600 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          Last
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </section>
       </div>

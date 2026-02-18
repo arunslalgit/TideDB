@@ -1,7 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { NavLink } from 'react-router-dom';
 import { Terminal, Database, PenLine, Activity, Menu, X, ChevronDown, ChevronUp, Circle } from 'lucide-react';
 import { client } from '../api/client';
+import ConnectionManager from './ConnectionManager';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -26,22 +27,54 @@ export default function Layout({ children }: LayoutProps) {
   const [credentialsOpen, setCredentialsOpen] = useState(false);
   const [credentials, setCredentials] = useState<Credentials>({ username: '', password: '' });
 
+  // Standalone mode (tidedb-ui binary) vs embedded mode (full TideDB server).
+  const [standaloneMode, setStandaloneMode] = useState(false);
+  const [defaultUrl, setDefaultUrl] = useState<string | undefined>(undefined);
+  const [modeChecked, setModeChecked] = useState(false);
+
+  // Check /api/mode on mount to detect standalone mode.
   useEffect(() => {
-    async function fetchPing() {
+    (async () => {
       try {
-        const response = await client.ping();
-        setVersion(response.version);
-        setConnected(response.ok);
+        const res = await fetch('/api/mode');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.mode === 'standalone') {
+            setStandaloneMode(true);
+            client.setStandaloneMode(true);
+            if (data.defaultUrl) setDefaultUrl(data.defaultUrl);
+          }
+        }
       } catch {
-        setConnected(false);
+        // Not standalone — embedded mode.
       }
-    }
-
-    fetchPing();
-
-    const interval = setInterval(fetchPing, 10000);
-    return () => clearInterval(interval);
+      setModeChecked(true);
+    })();
   }, []);
+
+  // Ping loop — re-pings whenever connection changes.
+  const doPing = useCallback(async () => {
+    try {
+      const response = await client.ping();
+      setVersion(response.version);
+      setConnected(response.ok);
+    } catch {
+      setConnected(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!modeChecked) return;
+    doPing();
+    const interval = setInterval(doPing, 10000);
+    return () => clearInterval(interval);
+  }, [modeChecked, doPing]);
+
+  // Called by ConnectionManager when the active connection changes.
+  const handleConnectionChange = useCallback(() => {
+    // Immediately re-ping the new connection.
+    doPing();
+  }, [doPing]);
 
   function handleCredentialChange(e: React.ChangeEvent<HTMLInputElement>) {
     const { name, value } = e.target;
@@ -51,6 +84,7 @@ export default function Layout({ children }: LayoutProps) {
   function handleCredentialsSubmit(e: React.FormEvent) {
     e.preventDefault();
     client.setCredentials(credentials.username, credentials.password);
+    doPing();
   }
 
   const sidebarContent = (
@@ -92,47 +126,55 @@ export default function Layout({ children }: LayoutProps) {
         ))}
       </nav>
 
-      {/* Bottom: credentials + connection status */}
+      {/* Bottom: connections/credentials + status */}
       <div className="border-t border-gray-800 px-3 py-4 space-y-3">
-        {/* Collapsible credentials */}
-        <div>
-          <button
-            onClick={() => setCredentialsOpen((o) => !o)}
-            className="flex items-center justify-between w-full px-3 py-2 text-xs font-medium text-gray-400 hover:text-white hover:bg-gray-800 rounded-md transition-colors duration-150"
-          >
-            <span>Credentials</span>
-            {credentialsOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
+        {standaloneMode ? (
+          /* Standalone mode — show connection manager */
+          <ConnectionManager
+            onConnectionChange={handleConnectionChange}
+            defaultUrl={defaultUrl}
+          />
+        ) : (
+          /* Embedded mode — show credentials form */
+          <div>
+            <button
+              onClick={() => setCredentialsOpen((o) => !o)}
+              className="flex items-center justify-between w-full px-3 py-2 text-xs font-medium text-gray-400 hover:text-white hover:bg-gray-800 rounded-md transition-colors duration-150"
+            >
+              <span>Credentials</span>
+              {credentialsOpen ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+            </button>
 
-          {credentialsOpen && (
-            <form onSubmit={handleCredentialsSubmit} className="mt-2 px-1 space-y-2">
-              <input
-                type="text"
-                name="username"
-                placeholder="Username"
-                value={credentials.username}
-                onChange={handleCredentialChange}
-                autoComplete="username"
-                className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
-              />
-              <input
-                type="password"
-                name="password"
-                placeholder="Password"
-                value={credentials.password}
-                onChange={handleCredentialChange}
-                autoComplete="current-password"
-                className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
-              />
-              <button
-                type="submit"
-                className="w-full py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors duration-150"
-              >
-                Apply
-              </button>
-            </form>
-          )}
-        </div>
+            {credentialsOpen && (
+              <form onSubmit={handleCredentialsSubmit} className="mt-2 px-1 space-y-2">
+                <input
+                  type="text"
+                  name="username"
+                  placeholder="Username"
+                  value={credentials.username}
+                  onChange={handleCredentialChange}
+                  autoComplete="username"
+                  className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+                <input
+                  type="password"
+                  name="password"
+                  placeholder="Password"
+                  value={credentials.password}
+                  onChange={handleCredentialChange}
+                  autoComplete="current-password"
+                  className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+                <button
+                  type="submit"
+                  className="w-full py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium transition-colors duration-150"
+                >
+                  Apply
+                </button>
+              </form>
+            )}
+          </div>
+        )}
 
         {/* Connection status */}
         <div className="flex items-center gap-2 px-3 py-2">

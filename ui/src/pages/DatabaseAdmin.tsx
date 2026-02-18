@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Database, Plus, Trash2, Users, RefreshCw, Shield } from 'lucide-react';
+import { Database, Plus, Trash2, Users, RefreshCw, Shield, BarChart3, AlertTriangle } from 'lucide-react';
 import { client } from '../api/client';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -36,7 +36,7 @@ interface UserInfo {
   admin: boolean;
 }
 
-type ActiveTab = 'databases' | 'continuous_queries' | 'users';
+type ActiveTab = 'databases' | 'continuous_queries' | 'users' | 'insights';
 
 // ── Confirmation Modal ─────────────────────────────────────────────────────────
 
@@ -47,6 +47,8 @@ interface ConfirmModalProps {
   onConfirm: () => void;
   onCancel: () => void;
   danger?: boolean;
+  /** When set, the user must type this exact text to enable the confirm button. */
+  requireTypedConfirmation?: string;
 }
 
 function ConfirmModal({
@@ -56,12 +58,31 @@ function ConfirmModal({
   onConfirm,
   onCancel,
   danger = true,
+  requireTypedConfirmation,
 }: ConfirmModalProps) {
+  const [typed, setTyped] = useState('');
+  const confirmEnabled = !requireTypedConfirmation || typed === requireTypedConfirmation;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
       <div className="bg-gray-800 rounded-lg shadow-2xl border border-gray-700 w-full max-w-md mx-4 p-6">
         <h3 className="text-lg font-semibold text-gray-100 mb-2">{title}</h3>
-        <p className="text-sm text-gray-400 mb-6">{message}</p>
+        <p className="text-sm text-gray-400 mb-4">{message}</p>
+        {requireTypedConfirmation && (
+          <div className="mb-4">
+            <p className="text-xs text-gray-500 mb-2">
+              Type <span className="font-mono text-red-400 font-semibold">{requireTypedConfirmation}</span> to confirm:
+            </p>
+            <input
+              type="text"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              autoFocus
+              placeholder={requireTypedConfirmation}
+              className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-600 focus:outline-none focus:border-red-500 transition-colors duration-150 font-mono"
+            />
+          </div>
+        )}
         <div className="flex justify-end gap-3">
           <button
             onClick={onCancel}
@@ -71,7 +92,8 @@ function ConfirmModal({
           </button>
           <button
             onClick={onConfirm}
-            className={`px-4 py-2 text-sm font-semibold text-white rounded-md transition-colors duration-150 ${
+            disabled={!confirmEnabled}
+            className={`px-4 py-2 text-sm font-semibold text-white rounded-md transition-colors duration-150 disabled:opacity-40 disabled:cursor-not-allowed ${
               danger
                 ? 'bg-red-600 hover:bg-red-700'
                 : 'bg-blue-600 hover:bg-blue-700'
@@ -657,6 +679,7 @@ function DatabasesTab({ onError, onSuccess }: DatabasesTabProps) {
           title="Drop Database"
           message={`Are you sure you want to drop the database "${confirmDrop}"? This action is irreversible and all data will be permanently deleted.`}
           confirmLabel="Drop Database"
+          requireTypedConfirmation={confirmDrop}
           onConfirm={() => handleDropDatabase(confirmDrop)}
           onCancel={() => setConfirmDrop(null)}
         />
@@ -1242,12 +1265,239 @@ function UsersTab({ onError, onSuccess }: UsersTabProps) {
   );
 }
 
+// ── Tab 4: Usage Insights ─────────────────────────────────────────────────────
+
+interface DatabaseInsight {
+  name: string;
+  seriesCardinality: number;
+  measurementCount: number;
+  rpCount: number;
+  latestShardEnd: Date | null;
+  staleDays: number | null;
+}
+
+interface InsightsTabProps {
+  onError: (msg: string) => void;
+}
+
+function InsightsTab({ onError }: InsightsTabProps) {
+  const [insights, setInsights] = useState<DatabaseInsight[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [analyzed, setAnalyzed] = useState(false);
+
+  const runAnalysis = async () => {
+    setLoading(true);
+    setAnalyzed(false);
+    try {
+      const databases = await client.getDatabases();
+
+      // Gather shard group info for staleness detection.
+      let latestShardByDb: Record<string, Date> = {};
+      try {
+        const shardGroups = await client.getShardGroups();
+        for (const sg of shardGroups) {
+          const db = sg.database || sg.Database;
+          const endTime = sg.end_time || sg['end time'] || sg.expiry_time;
+          if (db && endTime) {
+            const d = new Date(endTime);
+            if (!isNaN(d.getTime()) && (!latestShardByDb[db] || d > latestShardByDb[db])) {
+              latestShardByDb[db] = d;
+            }
+          }
+        }
+      } catch {
+        // SHOW SHARD GROUPS may not be supported on all versions.
+      }
+
+      // Fetch per-DB stats in parallel.
+      const results = await Promise.all(
+        databases.map(async (name) => {
+          let seriesCardinality = 0;
+          let measurementCount = 0;
+          let rpCount = 0;
+          try { seriesCardinality = await client.getSeriesCardinality(name); } catch { /* skip */ }
+          try { measurementCount = (await client.getMeasurements(name)).length; } catch { /* skip */ }
+          try { rpCount = (await client.getRetentionPolicies(name)).length; } catch { /* skip */ }
+
+          const latestShard = latestShardByDb[name] || null;
+          let staleDays: number | null = null;
+          if (latestShard) {
+            staleDays = Math.max(0, Math.floor((Date.now() - latestShard.getTime()) / (1000 * 60 * 60 * 24)));
+          }
+
+          return { name, seriesCardinality, measurementCount, rpCount, latestShardEnd: latestShard, staleDays };
+        }),
+      );
+
+      // Sort by series cardinality descending (most used first).
+      results.sort((a, b) => b.seriesCardinality - a.seriesCardinality);
+      setInsights(results);
+      setAnalyzed(true);
+    } catch (err: any) {
+      onError(err?.message ?? 'Analysis failed.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatStaleness = (db: DatabaseInsight) => {
+    if (db.staleDays === null) return '—';
+    if (db.staleDays === 0) return 'Today';
+    if (db.staleDays === 1) return '1 day ago';
+    return `${db.staleDays}d ago`;
+  };
+
+  const staleThreshold = 7; // days
+
+  const totalSeries = insights.reduce((a, b) => a + b.seriesCardinality, 0);
+  const totalMeasurements = insights.reduce((a, b) => a + b.measurementCount, 0);
+  const staleCount = insights.filter((d) => d.staleDays !== null && d.staleDays > staleThreshold).length;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-base font-semibold text-gray-200 flex items-center gap-2">
+          <BarChart3 className="w-5 h-5 text-blue-400" />
+          Usage Insights
+        </h2>
+        <button
+          onClick={runAnalysis}
+          disabled={loading}
+          className="flex items-center gap-2 px-3 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors duration-150 disabled:opacity-50"
+        >
+          {loading ? (
+            <svg className="w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+            </svg>
+          ) : (
+            <BarChart3 className="w-4 h-4" />
+          )}
+          {loading ? 'Analyzing...' : analyzed ? 'Re-analyze' : 'Analyze Usage'}
+        </button>
+      </div>
+
+      {!analyzed && !loading && (
+        <div className="text-center py-16 text-gray-500">
+          <BarChart3 className="w-10 h-10 mx-auto mb-3 opacity-30" />
+          <p className="text-sm">Click "Analyze Usage" to scan all databases.</p>
+          <p className="text-xs text-gray-600 mt-1">
+            Queries each database for series cardinality, measurements, and shard groups.
+          </p>
+        </div>
+      )}
+
+      {loading && (
+        <div className="flex items-center justify-center py-16 text-gray-500">
+          <svg className="w-5 h-5 animate-spin mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+          </svg>
+          Analyzing databases... this may take a moment.
+        </div>
+      )}
+
+      {analyzed && !loading && (
+        <>
+          {/* Summary cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+            <div className="bg-gray-800 rounded-lg border border-gray-700 px-4 py-3">
+              <div className="text-xs text-gray-500 mb-1">Databases</div>
+              <div className="text-lg font-bold text-gray-100">{insights.length}</div>
+            </div>
+            <div className="bg-gray-800 rounded-lg border border-gray-700 px-4 py-3">
+              <div className="text-xs text-gray-500 mb-1">Total Series</div>
+              <div className="text-lg font-bold text-gray-100">{totalSeries.toLocaleString()}</div>
+            </div>
+            <div className="bg-gray-800 rounded-lg border border-gray-700 px-4 py-3">
+              <div className="text-xs text-gray-500 mb-1">Total Measurements</div>
+              <div className="text-lg font-bold text-gray-100">{totalMeasurements.toLocaleString()}</div>
+            </div>
+            <div className="bg-gray-800 rounded-lg border border-gray-700 px-4 py-3">
+              <div className="text-xs text-gray-500 mb-1">Stale ({'>'}7d)</div>
+              <div className={`text-lg font-bold ${staleCount > 0 ? 'text-amber-400' : 'text-green-400'}`}>
+                {staleCount}
+              </div>
+            </div>
+          </div>
+
+          {/* Table */}
+          {insights.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              <Database className="w-10 h-10 mx-auto mb-3 opacity-30" />
+              <p className="text-sm">No databases found.</p>
+            </div>
+          ) : (
+            <div className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-800 border-b border-gray-700">
+                    <th className="px-4 py-3 text-left font-semibold text-gray-400">Database</th>
+                    <th className="px-4 py-3 text-right font-semibold text-gray-400">Series</th>
+                    <th className="px-4 py-3 text-right font-semibold text-gray-400">Measurements</th>
+                    <th className="px-4 py-3 text-right font-semibold text-gray-400">RPs</th>
+                    <th className="px-4 py-3 text-right font-semibold text-gray-400">Latest Shard</th>
+                    <th className="px-4 py-3 text-center font-semibold text-gray-400">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {insights.map((db) => {
+                    const isStale = db.staleDays !== null && db.staleDays > staleThreshold;
+                    const isSystem = db.name === '_internal';
+                    return (
+                      <tr key={db.name} className="border-b border-gray-700 last:border-0 hover:bg-gray-700/30 transition-colors duration-150">
+                        <td className="px-4 py-3 font-mono text-gray-100">
+                          {db.name}
+                          {isSystem && (
+                            <span className="ml-2 text-[10px] text-gray-500 font-sans">(system)</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-gray-300">
+                          {db.seriesCardinality.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-gray-300">
+                          {db.measurementCount.toLocaleString()}
+                        </td>
+                        <td className="px-4 py-3 text-right font-mono text-gray-300">
+                          {db.rpCount}
+                        </td>
+                        <td className="px-4 py-3 text-right text-gray-400 text-xs">
+                          {formatStaleness(db)}
+                        </td>
+                        <td className="px-4 py-3 text-center">
+                          {isStale && !isSystem ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-semibold bg-amber-900/60 text-amber-300 border border-amber-700">
+                              <AlertTriangle className="w-3 h-3" />
+                              Stale
+                            </span>
+                          ) : db.staleDays !== null ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-green-900/40 text-green-400 border border-green-800">
+                              Active
+                            </span>
+                          ) : (
+                            <span className="text-gray-600 text-xs">—</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────────
 
 const TABS: { id: ActiveTab; label: string }[] = [
   { id: 'databases', label: 'Databases & RPs' },
   { id: 'continuous_queries', label: 'Continuous Queries' },
   { id: 'users', label: 'Users' },
+  { id: 'insights', label: 'Usage Insights' },
 ];
 
 export default function DatabaseAdmin() {
@@ -1311,6 +1561,9 @@ export default function DatabaseAdmin() {
         )}
         {activeTab === 'users' && (
           <UsersTab onError={handleError} onSuccess={handleSuccess} />
+        )}
+        {activeTab === 'insights' && (
+          <InsightsTab onError={handleError} />
         )}
       </div>
     </div>
