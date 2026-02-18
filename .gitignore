@@ -1,0 +1,15 @@
+# Build output
+timeseriesui
+timeseriesui.exe
+*.exe
+
+# UI build artifacts (committed intentionally for embedded builds;
+# delete this line if you prefer to .gitignore dist and build locally)
+# ui/dist/
+
+# Node
+ui/node_modules/
+
+# Go
+*.test
+*.out
