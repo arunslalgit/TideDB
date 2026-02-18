@@ -41,6 +41,36 @@ const EPOCH_OPTIONS = [
   { value: 's', label: 's' },
 ];
 
+/** Convert an epoch or RFC3339 timestamp to a human-readable local string. */
+function formatTimestampValue(val: any, epochUnit: string): string {
+  if (val === null || val === undefined) return '';
+  const s = String(val);
+  // Already RFC3339 — parse directly
+  if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}T/.test(val)) {
+    const d = new Date(val);
+    if (!isNaN(d.getTime())) return d.toLocaleString();
+    return s;
+  }
+  const num = Number(val);
+  if (isNaN(num)) return s;
+  let ms: number;
+  switch (epochUnit) {
+    case 'ns': ms = num / 1e6; break;
+    case 'us': ms = num / 1e3; break;
+    case 'ms': ms = num; break;
+    case 's':  ms = num * 1000; break;
+    default:   // Default epoch is nanoseconds for InfluxDB
+      if (num > 1e15) ms = num / 1e6;       // likely nanoseconds
+      else if (num > 1e12) ms = num / 1e3;  // likely microseconds
+      else if (num > 1e10) ms = num;         // likely milliseconds
+      else ms = num * 1000;                  // likely seconds
+      break;
+  }
+  const d = new Date(ms);
+  if (!isNaN(d.getTime())) return d.toLocaleString();
+  return s;
+}
+
 const INFLUXQL_KEYWORDS = [
   'SELECT', 'FROM', 'WHERE', 'GROUP BY', 'ORDER BY', 'LIMIT', 'OFFSET',
   'INTO', 'SHOW', 'CREATE', 'DROP', 'ALTER', 'GRANT', 'REVOKE', 'SET',
@@ -496,9 +526,11 @@ function SchemaExplorer({ onInsert }: SchemaExplorerProps) {
 
 interface ResultsTableProps {
   series: ParsedSeries[];
+  humanTime?: boolean;
+  epochUnit?: string;
 }
 
-function ResultsTable({ series }: ResultsTableProps) {
+function ResultsTable({ series, humanTime, epochUnit = '' }: ResultsTableProps) {
   const [sortCol, setSortCol] = useState<string | null>(null);
   const [sortDir, setSortDir] = useState<SortDir>('asc');
 
@@ -560,13 +592,26 @@ function ResultsTable({ series }: ResultsTableProps) {
                 <tbody>
                   {rows.map((row, ri) => (
                     <tr key={ri} className="border-b border-gray-700/50 hover:bg-gray-700/30 transition-colors duration-150">
-                      {s.columns.map((col) => (
-                        <td key={col} className="px-3 py-1.5 text-gray-300 whitespace-nowrap font-mono">
-                          {row[col] === null || row[col] === undefined
-                            ? <span className="text-gray-600 italic">null</span>
-                            : String(row[col])}
-                        </td>
-                      ))}
+                      {s.columns.map((col) => {
+                        const v = row[col];
+                        const isTimeCol = /^time$/i.test(col);
+                        let display: React.ReactNode;
+                        if (v === null || v === undefined) {
+                          display = <span className="text-gray-600 italic">null</span>;
+                        } else if (humanTime && isTimeCol) {
+                          const readable = formatTimestampValue(v, epochUnit);
+                          display = (
+                            <span title={String(v)}>{readable}</span>
+                          );
+                        } else {
+                          display = String(v);
+                        }
+                        return (
+                          <td key={col} className="px-3 py-1.5 text-gray-300 whitespace-nowrap font-mono">
+                            {display}
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
                 </tbody>
@@ -760,6 +805,7 @@ export default function QueryExplorer() {
   const [results, setResults] = useState<QueryResults | null>(null);
   const [running, setRunning] = useState(false);
   const [activeTab, setActiveTab] = useState<'table' | 'chart'>('table');
+  const [humanTime, setHumanTime] = useState(true);
   const [connectionKey, setConnectionKey] = useState(0);
 
   // Re-fetch everything when the connection changes
@@ -999,7 +1045,22 @@ export default function QueryExplorer() {
                 Chart
               </button>
               {results && !results.error && (
-                <div className="ml-auto flex items-center gap-2">
+                <div className="ml-auto flex items-center gap-3">
+                  {/* Human-readable timestamp toggle */}
+                  <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Toggle between raw epoch and readable timestamps">
+                    <Clock className="w-3 h-3 text-gray-500" />
+                    <span className="text-xs text-gray-500">Readable time</span>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={humanTime}
+                      onClick={() => setHumanTime((v) => !v)}
+                      className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors duration-200 ${humanTime ? 'bg-blue-600' : 'bg-gray-600'}`}
+                    >
+                      <span className={`inline-block h-3 w-3 rounded-full bg-white transition-transform duration-200 ${humanTime ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                    </button>
+                  </label>
+                  <span className="text-xs text-gray-600">|</span>
                   <span className="text-xs text-gray-500">
                     {totalRows} row{totalRows !== 1 ? 's' : ''}
                   </span>
@@ -1030,7 +1091,7 @@ export default function QueryExplorer() {
               )}
               {results && !results.error && (
                 <div className="h-full overflow-hidden">
-                  {activeTab === 'table' && <ResultsTable series={results.series} />}
+                  {activeTab === 'table' && <ResultsTable series={results.series} humanTime={humanTime} epochUnit={epoch} />}
                   {activeTab === 'chart' && <ResultsChart series={results.series} />}
                 </div>
               )}
