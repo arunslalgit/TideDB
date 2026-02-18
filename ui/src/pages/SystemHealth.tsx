@@ -439,7 +439,7 @@ export default function SystemHealth() {
               <InfoCard
                 icon={<Activity className="w-3.5 h-3.5" />}
                 label="Version"
-                value={serverInfo.version ?? ''}
+                value={serverInfo.version && serverInfo.version !== 'unknown' ? serverInfo.version : '—'}
               />
               <InfoCard
                 icon={<Clock className="w-3.5 h-3.5" />}

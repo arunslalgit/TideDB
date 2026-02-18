@@ -63,7 +63,7 @@ export default function Layout({ children }: LayoutProps) {
           </div>
           <div>
             <span className="text-white font-semibold text-base leading-tight block">TideDB</span>
-            {version && (
+            {version && version !== 'unknown' && (
               <span className="text-gray-500 text-xs leading-tight block">v{version}</span>
             )}
           </div>

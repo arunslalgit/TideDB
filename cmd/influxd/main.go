@@ -16,6 +16,7 @@ import (
 	"github.com/influxdata/influxdb/cmd/influxd/help"
 	"github.com/influxdata/influxdb/cmd/influxd/restore"
 	"github.com/influxdata/influxdb/cmd/influxd/run"
+	"github.com/influxdata/influxdb/internal/branding"
 )
 
 // These variables are populated via the Go linker.
@@ -26,12 +27,12 @@ var (
 )
 
 func init() {
-	// If commit, branch, or build time are not set, make that clear.
+	// If version is not set via linker, use branding package default.
 	if version == "" {
-		version = "unknown"
+		version = branding.Version
 	}
 	if commit == "" {
-		commit = "unknown"
+		commit = branding.Commit
 	}
 	if branch == "" {
 		branch = "unknown"
@@ -161,7 +162,7 @@ func (cmd *VersionCommand) Run(args ...string) error {
 	}
 
 	// Print version info.
-	fmt.Fprintf(cmd.Stdout, "InfluxDB %s (git: %s %s)\n", version, branch, commit)
+	fmt.Fprintf(cmd.Stdout, "TideDB %s (git: %s %s)\n", version, branch, commit)
 
 	return nil
 }

@@ -207,7 +207,7 @@ class TideDBClient {
   async getUsers(): Promise<any[]> {
     const result = await this.query('SHOW USERS');
     const series = result.results?.[0]?.series?.[0];
-    if (!series) return [];
+    if (!series || !Array.isArray(series.values)) return [];
     return series.values.map((v: any[]) => ({
       user: v[0],
       admin: v[1],

@@ -673,6 +673,165 @@ function DatabasesTab({ onError, onSuccess }: DatabasesTabProps) {
   );
 }
 
+// ── Create Continuous Query Modal ─────────────────────────────────────────────
+
+interface CreateCQModalProps {
+  databases: string[];
+  onClose: () => void;
+  onCreated: () => void;
+}
+
+function CreateCQModal({ databases, onClose, onCreated }: CreateCQModalProps) {
+  const [cqName, setCqName] = useState('');
+  const [database, setDatabase] = useState(databases[0] ?? '');
+  const [resampleEvery, setResampleEvery] = useState('');
+  const [resampleFor, setResampleFor] = useState('');
+  const [selectQuery, setSelectQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const handleCreate = async () => {
+    const trimmedName = cqName.trim();
+    if (!trimmedName) {
+      setError('Continuous query name is required.');
+      return;
+    }
+    if (!database) {
+      setError('Database is required.');
+      return;
+    }
+    const trimmedQuery = selectQuery.trim();
+    if (!trimmedQuery) {
+      setError('SELECT query is required.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      let resampleClause = '';
+      const every = resampleEvery.trim();
+      const forDur = resampleFor.trim();
+      if (every || forDur) {
+        resampleClause = ' RESAMPLE';
+        if (every) resampleClause += ` EVERY ${every}`;
+        if (forDur) resampleClause += ` FOR ${forDur}`;
+      }
+      const q = `CREATE CONTINUOUS QUERY "${trimmedName}" ON "${database}"${resampleClause} BEGIN ${trimmedQuery} END`;
+      await client.query(q);
+      onCreated();
+      onClose();
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to create continuous query.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+      <div className="bg-gray-800 rounded-lg shadow-2xl border border-gray-700 w-full max-w-lg mx-4 p-6">
+        <h3 className="text-lg font-semibold text-gray-100 mb-4 flex items-center gap-2">
+          <RefreshCw className="w-5 h-5 text-blue-400" />
+          Create Continuous Query
+        </h3>
+        {error && (
+          <div className="bg-red-950/60 border border-red-700 rounded-md px-3 py-2 mb-4 text-sm text-red-300 font-mono break-all">
+            {error}
+          </div>
+        )}
+        <div className="flex flex-col gap-3">
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">CQ Name</label>
+            <input
+              type="text"
+              value={cqName}
+              onChange={(e) => setCqName(e.target.value)}
+              placeholder="my_cq"
+              autoFocus
+              className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors duration-150"
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">Database</label>
+            <select
+              value={database}
+              onChange={(e) => setDatabase(e.target.value)}
+              className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-gray-100 focus:outline-none focus:border-blue-500 transition-colors duration-150"
+            >
+              {databases.map((db) => (
+                <option key={db} value={db}>{db}</option>
+              ))}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">
+                Resample Every
+                <span className="ml-1 text-xs text-gray-500">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={resampleEvery}
+                onChange={(e) => setResampleEvery(e.target.value)}
+                placeholder="e.g. 1h"
+                className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors duration-150"
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-gray-400 mb-1">
+                Resample For
+                <span className="ml-1 text-xs text-gray-500">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={resampleFor}
+                onChange={(e) => setResampleFor(e.target.value)}
+                placeholder="e.g. 2h"
+                className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors duration-150"
+              />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm text-gray-400 mb-1">
+              SELECT Query
+              <span className="ml-2 text-xs text-gray-500">(the full SELECT ... INTO ... FROM ... GROUP BY time(...) statement)</span>
+            </label>
+            <textarea
+              value={selectQuery}
+              onChange={(e) => setSelectQuery(e.target.value)}
+              placeholder={'SELECT mean("value") INTO "downsampled"."autogen"."cpu" FROM "cpu" GROUP BY time(1h)'}
+              rows={4}
+              className="w-full bg-gray-700 border border-gray-600 rounded-md px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors duration-150 font-mono resize-y"
+            />
+          </div>
+        </div>
+        <div className="flex justify-end gap-3 mt-6">
+          <button
+            onClick={onClose}
+            disabled={loading}
+            className="px-4 py-2 text-sm bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-md transition-colors duration-150 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleCreate}
+            disabled={loading}
+            className="px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors duration-150 disabled:opacity-50 flex items-center gap-2"
+          >
+            {loading && (
+              <svg className="w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+            )}
+            Create CQ
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── Tab 2: Continuous Queries ─────────────────────────────────────────────────
 
 interface ContinuousQueriesTabProps {
@@ -683,7 +842,18 @@ interface ContinuousQueriesTabProps {
 function ContinuousQueriesTab({ onError, onSuccess }: ContinuousQueriesTabProps) {
   const [groups, setGroups] = useState<ContinuousQueryGroup[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showCreateCQ, setShowCreateCQ] = useState(false);
+  const [databases, setDatabases] = useState<string[]>([]);
   const [confirmDrop, setConfirmDrop] = useState<{ name: string; db: string } | null>(null);
+
+  const fetchDatabases = useCallback(async () => {
+    try {
+      const dbs = await client.getDatabases();
+      setDatabases(dbs);
+    } catch {
+      // ignore — databases are only needed for the create modal
+    }
+  }, []);
 
   const fetchCQs = useCallback(async () => {
     setLoading(true);
@@ -711,7 +881,8 @@ function ContinuousQueriesTab({ onError, onSuccess }: ContinuousQueriesTabProps)
 
   useEffect(() => {
     fetchCQs();
-  }, [fetchCQs]);
+    fetchDatabases();
+  }, [fetchCQs, fetchDatabases]);
 
   const handleDropCQ = async (cqName: string, dbName: string) => {
     setConfirmDrop(null);
@@ -738,14 +909,23 @@ function ContinuousQueriesTab({ onError, onSuccess }: ContinuousQueriesTabProps)
             </span>
           )}
         </h2>
-        <button
-          onClick={fetchCQs}
-          disabled={loading}
-          title="Refresh"
-          className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 rounded-md border border-gray-700 transition-colors duration-150 disabled:opacity-50"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={fetchCQs}
+            disabled={loading}
+            title="Refresh"
+            className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-400 hover:text-gray-200 rounded-md border border-gray-700 transition-colors duration-150 disabled:opacity-50"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </button>
+          <button
+            onClick={() => { fetchDatabases(); setShowCreateCQ(true); }}
+            className="flex items-center gap-2 px-3 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors duration-150"
+          >
+            <Plus className="w-4 h-4" />
+            Create CQ
+          </button>
+        </div>
       </div>
 
       {loading ? (
@@ -812,6 +992,17 @@ function ContinuousQueriesTab({ onError, onSuccess }: ContinuousQueriesTabProps)
           confirmLabel="Drop CQ"
           onConfirm={() => handleDropCQ(confirmDrop.name, confirmDrop.db)}
           onCancel={() => setConfirmDrop(null)}
+        />
+      )}
+
+      {showCreateCQ && (
+        <CreateCQModal
+          databases={databases}
+          onClose={() => setShowCreateCQ(false)}
+          onCreated={() => {
+            onSuccess('Continuous query created successfully.');
+            fetchCQs();
+          }}
         />
       )}
     </div>
@@ -937,7 +1128,7 @@ function UsersTab({ onError, onSuccess }: UsersTabProps) {
     setLoading(true);
     try {
       const data = await client.getUsers();
-      setUsers(data);
+      setUsers(Array.isArray(data) ? data : []);
     } catch (err: any) {
       onError(err?.message ?? 'Failed to load users.');
     } finally {
