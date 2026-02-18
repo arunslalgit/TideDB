@@ -19,6 +19,9 @@ import {
   Table2,
   BarChart3,
   Search,
+  Download,
+  FileJson,
+  Zap,
 } from 'lucide-react';
 import { client } from '../api/client';
 
@@ -169,6 +172,46 @@ function parseQueryResults(rawResult: any): ParsedSeries[] {
   return series;
 }
 
+function downloadFile(content: string, filename: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function exportCSV(series: ParsedSeries[]) {
+  const lines: string[] = [];
+  for (const s of series) {
+    if (series.length > 1) lines.push(`# ${s.name}${Object.keys(s.tags).length ? ' ' + JSON.stringify(s.tags) : ''}`);
+    lines.push(s.columns.join(','));
+    for (const row of s.rows) {
+      lines.push(s.columns.map((col) => {
+        const val = row[col];
+        if (val === null || val === undefined) return '';
+        const str = String(val);
+        return str.includes(',') || str.includes('"') || str.includes('\n') ? `"${str.replace(/"/g, '""')}"` : str;
+      }).join(','));
+    }
+    lines.push('');
+  }
+  downloadFile(lines.join('\n'), 'query_results.csv', 'text/csv');
+}
+
+function exportJSON(series: ParsedSeries[]) {
+  const data = series.map((s) => ({
+    name: s.name,
+    tags: s.tags,
+    columns: s.columns,
+    values: s.rows,
+  }));
+  downloadFile(JSON.stringify(data, null, 2), 'query_results.json', 'application/json');
+}
+
 function buildTagLabel(tags: Record<string, string>): string {
   const pairs = Object.entries(tags);
   if (pairs.length === 0) return '';
@@ -187,6 +230,7 @@ function SchemaExplorer({ onInsert }: SchemaExplorerProps) {
   const [loadedChildren, setLoadedChildren] = useState<Record<string, SchemaNode[]>>({});
   const [loading, setLoading] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState('');
+  const [tagValues, setTagValues] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     client.getDatabases().then(setDatabases).catch(() => {});
@@ -335,6 +379,17 @@ function SchemaExplorer({ onInsert }: SchemaExplorerProps) {
       onInsert(`"${node.name}"`);
     } else if (node.type === 'tag') {
       onInsert(`"${node.name}"`);
+      // Toggle tag values
+      const tvKey = `tv:${node.dbName}:${node.measurementName}:${node.name}`;
+      if (tagValues[tvKey]) {
+        setTagValues((prev) => { const next = { ...prev }; delete next[tvKey]; return next; });
+      } else if (node.dbName && node.measurementName) {
+        setLoading((prev) => new Set(prev).add(tvKey));
+        client.getTagValues(node.dbName, node.measurementName, node.name)
+          .then((vals) => setTagValues((prev) => ({ ...prev, [tvKey]: vals })))
+          .catch(() => {})
+          .finally(() => setLoading((prev) => { const next = new Set(prev); next.delete(tvKey); return next; }));
+      }
     }
   };
 
@@ -395,17 +450,43 @@ function SchemaExplorer({ onInsert }: SchemaExplorerProps) {
         {filtered.length === 0 && databases.length > 0 && search && (
           <div className="text-xs text-gray-500 px-3 py-4 text-center">No results for "{search}"</div>
         )}
-        {filtered.map((node) => (
-          <div
-            key={node.id}
-            style={{ paddingLeft: `${node.depth * 16 + 8}px` }}
-            className="flex items-center gap-1.5 py-0.5 pr-2 cursor-pointer hover:bg-gray-800 transition-colors duration-150 group select-none"
-            onClick={() => handleNodeClick(node)}
-          >
-            <span className="flex-shrink-0">{renderNodeIcon(node)}</span>
-            {nodeLabel(node)}
-          </div>
-        ))}
+        {filtered.map((node) => {
+          const tvKey = node.type === 'tag' ? `tv:${node.dbName}:${node.measurementName}:${node.name}` : '';
+          const tvLoading = tvKey && loading.has(tvKey);
+          const tvList = tvKey ? tagValues[tvKey] : undefined;
+          return (
+            <div key={node.id}>
+              <div
+                style={{ paddingLeft: `${node.depth * 16 + 8}px` }}
+                className="flex items-center gap-1.5 py-0.5 pr-2 cursor-pointer hover:bg-gray-800 transition-colors duration-150 group select-none"
+                onClick={() => handleNodeClick(node)}
+              >
+                <span className="flex-shrink-0">{renderNodeIcon(node)}</span>
+                {nodeLabel(node)}
+                {tvLoading && (
+                  <svg className="w-3 h-3 animate-spin text-gray-500 ml-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                  </svg>
+                )}
+              </div>
+              {tvList && tvList.length > 0 && (
+                <div style={{ paddingLeft: `${(node.depth + 1) * 16 + 8}px` }} className="py-0.5">
+                  <div className="flex flex-wrap gap-1 py-1">
+                    {tvList.slice(0, 50).map((val) => (
+                      <span key={val} onClick={() => onInsert(`'${val}'`)}
+                        className="inline-block px-1.5 py-0.5 text-[10px] bg-gray-800 border border-gray-700 rounded text-cyan-300 cursor-pointer hover:bg-gray-700 font-mono truncate max-w-[120px]"
+                        title={val}>
+                        {val}
+                      </span>
+                    ))}
+                    {tvList.length > 50 && <span className="text-[10px] text-gray-500">+{tvList.length - 50} more</span>}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -826,6 +907,15 @@ export default function QueryExplorer() {
                 </button>
                 <HistoryDropdown onSelect={setQuery} />
                 <button
+                  onClick={() => { const q = query.trim(); if (q && !q.toUpperCase().startsWith('EXPLAIN')) { setQuery('EXPLAIN ' + q); } executeQuery(); }}
+                  disabled={running}
+                  title="Explain query plan"
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs bg-amber-700 hover:bg-amber-600 disabled:bg-amber-900 disabled:text-amber-400 text-white rounded transition-colors duration-150"
+                >
+                  <Zap className="w-3.5 h-3.5" />
+                  Explain
+                </button>
+                <button
                   onClick={executeQuery}
                   disabled={running}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 disabled:bg-blue-900 disabled:text-blue-400 text-white rounded transition-colors duration-150"
@@ -891,9 +981,19 @@ export default function QueryExplorer() {
                 Chart
               </button>
               {results && !results.error && (
-                <span className="ml-auto text-xs text-gray-500">
-                  {totalRows} row{totalRows !== 1 ? 's' : ''}
-                </span>
+                <div className="ml-auto flex items-center gap-2">
+                  <span className="text-xs text-gray-500">
+                    {totalRows} row{totalRows !== 1 ? 's' : ''}
+                  </span>
+                  <button onClick={() => exportCSV(results.series)} title="Download CSV"
+                    className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded border border-gray-600 transition-colors duration-150">
+                    <Download className="w-3 h-3" /> CSV
+                  </button>
+                  <button onClick={() => exportJSON(results.series)} title="Download JSON"
+                    className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-700 hover:bg-gray-600 text-gray-300 rounded border border-gray-600 transition-colors duration-150">
+                    <FileJson className="w-3 h-3" /> JSON
+                  </button>
+                </div>
               )}
             </div>
 

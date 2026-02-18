@@ -8,7 +8,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from 'recharts';
-import { Activity, Server, HardDrive, Clock, Cpu, XCircle, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Activity, Server, HardDrive, Clock, Cpu, XCircle, RefreshCw, ChevronLeft, ChevronRight, Download, ChevronDown, ChevronUp, FileText, BarChart3 } from 'lucide-react';
 import { client } from '../api/client';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -223,6 +223,86 @@ function SectionHeading({ icon, title, subtitle }: SectionHeadingProps) {
   );
 }
 
+// ── Diagnostics Section Card ───────────────────────────────────────────────
+
+interface DiagnosticSection {
+  name: string;
+  columns: string[];
+  values: any[][];
+}
+
+function parseDiagnosticSections(result: any): DiagnosticSection[] {
+  const sections: DiagnosticSection[] = [];
+  if (!result?.results) return sections;
+  for (const res of result.results) {
+    for (const series of res.series ?? []) {
+      sections.push({
+        name: series.name ?? 'Unknown',
+        columns: series.columns ?? [],
+        values: series.values ?? [],
+      });
+    }
+  }
+  return sections;
+}
+
+interface DiagnosticCardProps {
+  section: DiagnosticSection;
+}
+
+function DiagnosticCard({ section }: DiagnosticCardProps) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="bg-gray-800 rounded-lg border border-gray-700 overflow-hidden">
+      <button onClick={() => setExpanded((e) => !e)}
+        className="flex items-center justify-between w-full px-4 py-3 text-left hover:bg-gray-750 transition-colors duration-150">
+        <span className="text-sm font-semibold text-gray-200">{section.name}</span>
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-gray-500">{section.columns.length} fields</span>
+          {expanded ? <ChevronUp className="w-4 h-4 text-gray-400" /> : <ChevronDown className="w-4 h-4 text-gray-400" />}
+        </div>
+      </button>
+      {expanded && section.values.length > 0 && (
+        <div className="border-t border-gray-700 px-4 py-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {section.columns.map((col, ci) => (
+              <div key={col} className="flex items-start gap-2">
+                <span className="text-xs text-gray-500 min-w-[120px] font-mono">{col}:</span>
+                <span className="text-xs text-gray-200 font-mono break-all">{String(section.values[0][ci] ?? '—')}</span>
+              </div>
+            ))}
+          </div>
+          {section.values.length > 1 && (
+            <div className="mt-3 border-t border-gray-700 pt-3">
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-700">
+                      {section.columns.map((col) => (
+                        <th key={col} className="px-2 py-1 text-left font-semibold text-gray-400 whitespace-nowrap">{col}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {section.values.map((row, ri) => (
+                      <tr key={ri} className="border-b border-gray-700 last:border-0">
+                        {row.map((val: any, ci: number) => (
+                          <td key={ci} className="px-2 py-1 text-gray-300 font-mono whitespace-nowrap">{String(val ?? '')}</td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────────────────
 
 export default function SystemHealth() {
@@ -246,6 +326,15 @@ export default function SystemHealth() {
   // Last updated timestamp and error state
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [error, setError] = useState('');
+
+  // Structured diagnostics/stats
+  const [diagSections, setDiagSections] = useState<DiagnosticSection[]>([]);
+  const [statSections, setStatSections] = useState<DiagnosticSection[]>([]);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [statsDetailLoading, setStatsDetailLoading] = useState(false);
+
+  // Backup
+  const [backupLoading, setBackupLoading] = useState(false);
 
   // Ref to track previous raw stat values for delta computation
   const prevStatsRef = useRef<{ pointsWritten: number; queriesExecuted: number } | null>(null);
@@ -354,6 +443,51 @@ export default function SystemHealth() {
       setError(err?.message ?? `Failed to kill query ${id}.`);
     } finally {
       setKillingId(null);
+    }
+  };
+
+  // ── Fetch structured diagnostics ────────────────────────────────────────
+
+  const fetchDiagnosticsDetail = useCallback(async () => {
+    setDiagLoading(true);
+    try {
+      const result = await client.getDiagnostics();
+      setDiagSections(parseDiagnosticSections(result));
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to load diagnostics.');
+    } finally {
+      setDiagLoading(false);
+    }
+  }, []);
+
+  const fetchStatsDetail = useCallback(async () => {
+    setStatsDetailLoading(true);
+    try {
+      const result = await client.getStats();
+      setStatSections(parseDiagnosticSections(result));
+    } catch (err: any) {
+      setError(err?.message ?? 'Failed to load stats.');
+    } finally {
+      setStatsDetailLoading(false);
+    }
+  }, []);
+
+  const handleBackup = async () => {
+    setBackupLoading(true);
+    try {
+      const blob = await client.backup();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tidedb-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.tar.gz`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setError(err?.message ?? 'Backup failed.');
+    } finally {
+      setBackupLoading(false);
     }
   };
 
@@ -801,6 +935,109 @@ export default function SystemHealth() {
                 </>
               );
             })()}
+          </div>
+        </section>
+
+        {/* ── Section 5: Structured Diagnostics ── */}
+        <section>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <span className="text-blue-400"><FileText className="w-5 h-5" /></span>
+              <h2 className="text-base font-semibold text-gray-200">SHOW DIAGNOSTICS</h2>
+              <span className="text-xs text-gray-500">(all sections)</span>
+            </div>
+            <button onClick={fetchDiagnosticsDetail} disabled={diagLoading}
+              className="flex items-center gap-2 px-3 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors duration-150 disabled:opacity-50">
+              {diagLoading ? (
+                <svg className="w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+              ) : <RefreshCw className="w-4 h-4" />}
+              {diagSections.length > 0 ? 'Refresh' : 'Load'}
+            </button>
+          </div>
+          {diagSections.length === 0 && !diagLoading && (
+            <div className="text-center py-8 text-gray-500 text-sm">Click "Load" to view all diagnostic sections.</div>
+          )}
+          {diagLoading && (
+            <div className="flex items-center justify-center py-8 text-gray-500">
+              <svg className="w-5 h-5 animate-spin mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+              Loading diagnostics...
+            </div>
+          )}
+          {diagSections.length > 0 && !diagLoading && (
+            <div className="flex flex-col gap-2">
+              {diagSections.map((section) => (
+                <DiagnosticCard key={section.name} section={section} />
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── Section 6: Structured Stats ── */}
+        <section>
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-2">
+              <span className="text-blue-400"><BarChart3 className="w-5 h-5" /></span>
+              <h2 className="text-base font-semibold text-gray-200">SHOW STATS</h2>
+              <span className="text-xs text-gray-500">(all modules)</span>
+            </div>
+            <button onClick={fetchStatsDetail} disabled={statsDetailLoading}
+              className="flex items-center gap-2 px-3 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors duration-150 disabled:opacity-50">
+              {statsDetailLoading ? (
+                <svg className="w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+              ) : <RefreshCw className="w-4 h-4" />}
+              {statSections.length > 0 ? 'Refresh' : 'Load'}
+            </button>
+          </div>
+          {statSections.length === 0 && !statsDetailLoading && (
+            <div className="text-center py-8 text-gray-500 text-sm">Click "Load" to view all stats modules.</div>
+          )}
+          {statsDetailLoading && (
+            <div className="flex items-center justify-center py-8 text-gray-500">
+              <svg className="w-5 h-5 animate-spin mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+              </svg>
+              Loading stats...
+            </div>
+          )}
+          {statSections.length > 0 && !statsDetailLoading && (
+            <div className="flex flex-col gap-2">
+              {statSections.map((section, idx) => (
+                <DiagnosticCard key={`${section.name}-${idx}`} section={section} />
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── Section 7: Backup ── */}
+        <section>
+          <SectionHeading
+            icon={<Download className="w-5 h-5" />}
+            title="Backup"
+          />
+          <div className="bg-gray-800 rounded-lg border border-gray-700 p-4">
+            <p className="text-sm text-gray-400 mb-3">
+              Download a portable backup snapshot via the debug endpoint. This creates a tar.gz archive of the current data.
+            </p>
+            <button onClick={handleBackup} disabled={backupLoading}
+              className="flex items-center gap-2 px-4 py-2 text-sm font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors duration-150 disabled:opacity-50">
+              {backupLoading ? (
+                <svg className="w-4 h-4 animate-spin" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z" />
+                </svg>
+              ) : <Download className="w-4 h-4" />}
+              {backupLoading ? 'Downloading...' : 'Download Backup'}
+            </button>
           </div>
         </section>
       </div>

@@ -259,6 +259,43 @@ class TideDBClient {
       admin: v[1],
     }));
   }
+
+  async getUserGrants(username: string): Promise<any[]> {
+    const result = await this.query(`SHOW GRANTS FOR "${username}"`);
+    const series = result.results?.[0]?.series?.[0];
+    if (!series) return [];
+    return series.values.map((v: any[]) => {
+      const grant: Record<string, any> = {};
+      series.columns.forEach((col: string, i: number) => {
+        grant[col] = v[i];
+      });
+      return grant;
+    });
+  }
+
+  async getSubscriptions(): Promise<any[]> {
+    const result = await this.query('SHOW SUBSCRIPTIONS');
+    return result.results?.[0]?.series || [];
+  }
+
+  async getTagValues(db: string, measurement: string, tagKey: string): Promise<string[]> {
+    const result = await this.query(`SHOW TAG VALUES FROM "${measurement}" WITH KEY = "${tagKey}"`, db);
+    const series = result.results?.[0]?.series?.[0];
+    if (!series) return [];
+    const valueIdx = series.columns.indexOf('value');
+    return series.values.map((v: any[]) => v[valueIdx >= 0 ? valueIdx : 1] as string);
+  }
+
+  async backup(): Promise<Blob> {
+    const res = await fetch(`${this.baseUrl}/debug/backup`, {
+      method: 'GET',
+      headers: this.getProxyHeaders(),
+    });
+    if (!res.ok) {
+      throw new Error(`Backup failed (${res.status}): ${await res.text()}`);
+    }
+    return res.blob();
+  }
 }
 
 export const client = new TideDBClient();
