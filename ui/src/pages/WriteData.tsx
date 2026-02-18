@@ -246,18 +246,23 @@ export default function WriteData() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Load databases on mount
-  useEffect(() => {
-    client
-      .getDatabases()
-      .then((dbs) => {
-        setDatabases(dbs);
-        if (dbs.length > 0) {
-          setSelectedDb(dbs[0]);
-        }
-      })
-      .catch(() => {});
+  const reloadDatabases = useCallback(() => {
+    client.getDatabases().then((dbs) => {
+      setDatabases(dbs);
+      if (dbs.length > 0) setSelectedDb(dbs[0]);
+      else { setSelectedDb(''); setRetentionPolicies([]); setSelectedRp(''); }
+    }).catch(() => { setDatabases([]); });
   }, []);
+
+  // Load databases on mount
+  useEffect(() => { reloadDatabases(); }, [reloadDatabases]);
+
+  // Re-fetch when connection changes
+  useEffect(() => {
+    const handler = () => { reloadDatabases(); setStatus({ kind: 'idle' }); };
+    window.addEventListener('tidedb-connection-change', handler);
+    return () => window.removeEventListener('tidedb-connection-change', handler);
+  }, [reloadDatabases]);
 
   // Load retention policies when db changes
   useEffect(() => {

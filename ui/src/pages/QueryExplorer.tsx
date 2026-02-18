@@ -760,6 +760,24 @@ export default function QueryExplorer() {
   const [results, setResults] = useState<QueryResults | null>(null);
   const [running, setRunning] = useState(false);
   const [activeTab, setActiveTab] = useState<'table' | 'chart'>('table');
+  const [connectionKey, setConnectionKey] = useState(0);
+
+  // Re-fetch everything when the connection changes
+  useEffect(() => {
+    const handler = () => {
+      setConnectionKey((k) => k + 1);
+      setResults(null);
+      setSelectedDb('');
+      setRetentionPolicies([]);
+      setSelectedRp('');
+      client.getDatabases().then((dbs) => {
+        setDatabases(dbs);
+        if (dbs.length > 0) { setSelectedDb(dbs[0]); saveLastDb(dbs[0]); }
+      }).catch(() => { setDatabases([]); });
+    };
+    window.addEventListener('tidedb-connection-change', handler);
+    return () => window.removeEventListener('tidedb-connection-change', handler);
+  }, []);
 
   // Load databases on mount
   useEffect(() => {
@@ -885,7 +903,7 @@ export default function QueryExplorer() {
           className="flex-shrink-0 border-r border-gray-700 overflow-hidden flex flex-col"
           style={{ width: '250px' }}
         >
-          <SchemaExplorer onInsert={handleInsert} />
+          <SchemaExplorer key={connectionKey} onInsert={handleInsert} />
         </div>
 
         {/* Right: Editor + Results */}

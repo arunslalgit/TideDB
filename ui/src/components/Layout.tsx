@@ -72,8 +72,9 @@ export default function Layout({ children }: LayoutProps) {
 
   // Called by ConnectionManager when the active connection changes.
   const handleConnectionChange = useCallback(() => {
-    // Immediately re-ping the new connection.
     doPing();
+    // Notify all pages to re-fetch data for the new connection.
+    window.dispatchEvent(new CustomEvent('tidedb-connection-change'));
   }, [doPing]);
 
   function handleCredentialChange(e: React.ChangeEvent<HTMLInputElement>) {
@@ -85,6 +86,7 @@ export default function Layout({ children }: LayoutProps) {
     e.preventDefault();
     client.setCredentials(credentials.username, credentials.password);
     doPing();
+    window.dispatchEvent(new CustomEvent('tidedb-connection-change'));
   }
 
   const sidebarContent = (

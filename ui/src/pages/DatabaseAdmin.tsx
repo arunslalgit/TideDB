@@ -1626,6 +1626,7 @@ interface DatabaseInsight {
   rpCount: number;
   latestShardEnd: Date | null;
   staleDays: number | null;
+  lastDataAt: string | null;
 }
 
 interface InsightsTabProps {
@@ -1665,11 +1666,26 @@ function InsightsTab({ onError }: InsightsTabProps) {
       const results = await Promise.all(
         databases.map(async (name) => {
           let seriesCardinality = 0;
-          let measurementCount = 0;
+          let measurements: string[] = [];
           let rpCount = 0;
           try { seriesCardinality = await client.getSeriesCardinality(name); } catch { /* skip */ }
-          try { measurementCount = (await client.getMeasurements(name)).length; } catch { /* skip */ }
+          try { measurements = await client.getMeasurements(name); } catch { /* skip */ }
           try { rpCount = (await client.getRetentionPolicies(name)).length; } catch { /* skip */ }
+
+          // Sample up to 5 measurements to find the latest data point
+          let lastDataAt: string | null = null;
+          const sample = measurements.slice(0, 5);
+          for (const m of sample) {
+            try {
+              const r = await client.query(`SELECT * FROM "${m}" ORDER BY time DESC LIMIT 1`, name, 'rfc3339');
+              const s = r.results?.[0]?.series?.[0];
+              if (s && s.values?.[0]) {
+                const tIdx = s.columns.indexOf('time');
+                const t = tIdx >= 0 ? String(s.values[0][tIdx]) : null;
+                if (t && (!lastDataAt || t > lastDataAt)) lastDataAt = t;
+              }
+            } catch { /* skip */ }
+          }
 
           const latestShard = latestShardByDb[name] || null;
           let staleDays: number | null = null;
@@ -1677,7 +1693,7 @@ function InsightsTab({ onError }: InsightsTabProps) {
             staleDays = Math.max(0, Math.floor((Date.now() - latestShard.getTime()) / (1000 * 60 * 60 * 24)));
           }
 
-          return { name, seriesCardinality, measurementCount, rpCount, latestShardEnd: latestShard, staleDays };
+          return { name, seriesCardinality, measurementCount: measurements.length, rpCount, latestShardEnd: latestShard, staleDays, lastDataAt };
         }),
       );
 
@@ -1789,6 +1805,7 @@ function InsightsTab({ onError }: InsightsTabProps) {
                     <th className="px-4 py-3 text-right font-semibold text-gray-400">Measurements</th>
                     <th className="px-4 py-3 text-right font-semibold text-gray-400">RPs</th>
                     <th className="px-4 py-3 text-right font-semibold text-gray-400">Latest Shard</th>
+                    <th className="px-4 py-3 text-right font-semibold text-gray-400">Last Data At</th>
                     <th className="px-4 py-3 text-center font-semibold text-gray-400">Status</th>
                   </tr>
                 </thead>
@@ -1815,6 +1832,21 @@ function InsightsTab({ onError }: InsightsTabProps) {
                         </td>
                         <td className="px-4 py-3 text-right text-gray-400 text-xs">
                           {formatStaleness(db)}
+                        </td>
+                        <td className="px-4 py-3 text-right text-xs font-mono">
+                          {db.lastDataAt ? (
+                            <span className="text-gray-300" title={db.lastDataAt}>
+                              {(() => {
+                                try {
+                                  const d = new Date(db.lastDataAt);
+                                  if (!isNaN(d.getTime())) return d.toLocaleString();
+                                } catch { /* ignore */ }
+                                return db.lastDataAt;
+                              })()}
+                            </span>
+                          ) : (
+                            <span className="text-gray-600">—</span>
+                          )}
                         </td>
                         <td className="px-4 py-3 text-center">
                           {isStale && !isSystem ? (
@@ -2210,6 +2242,14 @@ export default function DatabaseAdmin() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('databases');
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  // Re-mount active tab when connection changes
+  useEffect(() => {
+    const handler = () => { setRefreshKey((k) => k + 1); setError(''); setSuccess(''); };
+    window.addEventListener('tidedb-connection-change', handler);
+    return () => window.removeEventListener('tidedb-connection-change', handler);
+  }, []);
 
   const handleError = useCallback((msg: string) => {
     setError(msg);
@@ -2260,22 +2300,22 @@ export default function DatabaseAdmin() {
         {success && <SuccessBanner message={success} onDismiss={() => setSuccess('')} />}
 
         {activeTab === 'databases' && (
-          <DatabasesTab onError={handleError} onSuccess={handleSuccess} />
+          <DatabasesTab key={refreshKey} onError={handleError} onSuccess={handleSuccess} />
         )}
         {activeTab === 'continuous_queries' && (
-          <ContinuousQueriesTab onError={handleError} onSuccess={handleSuccess} />
+          <ContinuousQueriesTab key={refreshKey} onError={handleError} onSuccess={handleSuccess} />
         )}
         {activeTab === 'users' && (
-          <UsersTab onError={handleError} onSuccess={handleSuccess} />
+          <UsersTab key={refreshKey} onError={handleError} onSuccess={handleSuccess} />
         )}
         {activeTab === 'subscriptions' && (
-          <SubscriptionsTab onError={handleError} onSuccess={handleSuccess} />
+          <SubscriptionsTab key={refreshKey} onError={handleError} onSuccess={handleSuccess} />
         )}
         {activeTab === 'privileges' && (
-          <PrivilegesTab onError={handleError} />
+          <PrivilegesTab key={refreshKey} onError={handleError} />
         )}
         {activeTab === 'insights' && (
-          <InsightsTab onError={handleError} />
+          <InsightsTab key={refreshKey} onError={handleError} />
         )}
       </div>
     </div>

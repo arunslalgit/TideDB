@@ -498,6 +498,21 @@ export default function SystemHealth() {
     fetchShardGroups();
   }, [fetchServerInfo, fetchShardGroups]);
 
+  // Re-fetch everything when connection changes
+  useEffect(() => {
+    const handler = () => {
+      prevStatsRef.current = null;
+      setMetrics([]);
+      setDiagSections([]);
+      setStatSections([]);
+      setError('');
+      fetchServerInfo();
+      fetchShardGroups();
+    };
+    window.addEventListener('tidedb-connection-change', handler);
+    return () => window.removeEventListener('tidedb-connection-change', handler);
+  }, [fetchServerInfo, fetchShardGroups]);
+
   // Initial fetch and 5-second interval for stats + queries
   useEffect(() => {
     fetchStats();
