@@ -65,7 +65,16 @@ export default function PromConfig() {
         </div>
       </div>
 
-      {error && <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">{error}</div>}
+      {error && (
+        <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">
+          {error}
+          {error.includes('unsupported path') && (
+            <p className="mt-1 text-xs text-red-400">
+              The config API is not available on VictoriaMetrics cluster vmselect. Connect to a single-node VM instance, or check VM command-line flags on the TSDB Status page instead.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Search */}
       <div className="relative max-w-xs">

@@ -98,8 +98,8 @@ export async function getTopQueries(
   auth?: { username?: string; password?: string },
 ): Promise<TopQueries> {
   const url = buildURL(target, '/api/v1/status/top_queries', { topN: String(topN), maxLifetime });
-  const resp = await doFetch<{ status: string; data: TopQueries }>(url, undefined, auth);
-  return resp.data;
+  const resp = await doFetch<{ status: string; data?: TopQueries }>(url, undefined, auth);
+  return resp.data || { topByCount: [], topByAvgDuration: [], topBySumDuration: [] };
 }
 
 export async function getSeriesCount(
@@ -122,8 +122,14 @@ export async function getTsdbStatusEnhanced(
   if (opts.date) params.date = opts.date;
   if (opts.match) params['match[]'] = opts.match;
   const url = buildURL(target, '/api/v1/status/tsdb', params);
-  const resp = await doFetch<{ status: string; data: VmTsdbStatus }>(url, undefined, auth);
-  return resp.data;
+  const resp = await doFetch<{ status: string; data?: VmTsdbStatus }>(url, undefined, auth);
+  return resp.data || {
+    seriesCountByMetricName: [],
+    seriesCountByLabelName: [],
+    seriesCountByFocusLabelValue: [],
+    seriesCountByLabelValuePair: [],
+    labelValueCountByLabelName: [],
+  };
 }
 
 // ── Snapshots ───────────────────────────────────────────────────────────────

@@ -10,10 +10,15 @@ export default function VmExportImport() {
   const { connection, auth } = useActiveConnection();
   const [tab, setTab] = useState<'export' | 'import'>('export');
 
-  // Export state
-  const [exportMatch, setExportMatch] = useState('{__name__!=""}');
-  const [exportStart, setExportStart] = useState('');
-  const [exportEnd, setExportEnd] = useState('');
+  // Export state — default to last 1 hour to avoid overwhelming large instances
+  const [exportMatch, setExportMatch] = useState('');
+  const [exportStart, setExportStart] = useState(() => {
+    const d = new Date(Date.now() - 3600_000);
+    return d.toISOString().replace(/\.\d+Z$/, 'Z');
+  });
+  const [exportEnd, setExportEnd] = useState(() => {
+    return new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  });
   const [exportFormat, setExportFormat] = useState<ExportFormat>('json');
   const [csvFormatStr, setCsvFormatStr] = useState('__name__,__value__,__timestamp__:unix_s');
   const [exportPreview, setExportPreview] = useState('');
@@ -29,7 +34,10 @@ export default function VmExportImport() {
   const [error, setError] = useState<string | null>(null);
 
   const handlePreview = async () => {
-    if (!connection || !exportMatch.trim()) return;
+    if (!connection || !exportMatch.trim()) {
+      setError('Match selector is required. Example: {__name__="up"} or {job="node"}');
+      return;
+    }
     setExporting(true);
     setError(null);
     try {
@@ -49,7 +57,10 @@ export default function VmExportImport() {
   };
 
   const handleDownload = async () => {
-    if (!connection || !exportMatch.trim()) return;
+    if (!connection || !exportMatch.trim()) {
+      setError('Match selector is required. Example: {__name__="up"} or {job="node"}');
+      return;
+    }
     setExporting(true);
     setError(null);
     try {
@@ -128,7 +139,16 @@ export default function VmExportImport() {
         </button>
       </div>
 
-      {error && <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">{error}</div>}
+      {error && (
+        <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">
+          {error}
+          {(error.includes('matching timeseries exceeds') || error.includes('search.max')) && (
+            <p className="mt-1 text-xs text-red-400">
+              Too many matching series. Narrow the match selector and/or reduce the time range.
+            </p>
+          )}
+        </div>
+      )}
 
       {tab === 'export' && (
         <div className="space-y-4">
@@ -139,7 +159,7 @@ export default function VmExportImport() {
                 type="text"
                 value={exportMatch}
                 onChange={(e) => setExportMatch(e.target.value)}
-                placeholder='{__name__=~"vm_.*"}'
+                placeholder='{__name__=~"up|node_cpu_seconds_total"}'
                 className="w-full px-3 py-2 rounded bg-gray-800 border border-gray-700 text-gray-200 text-sm font-mono placeholder-gray-600 focus:outline-none focus:border-blue-500"
               />
             </div>
