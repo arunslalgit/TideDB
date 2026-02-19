@@ -83,7 +83,7 @@ export default function PromAlertmanager() {
     }
   };
 
-  if (!connection || connection.type !== 'prometheus') {
+  if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) {
     return <div className="flex items-center justify-center h-full text-gray-500"><p>Select a Prometheus connection.</p></div>;
   }
 

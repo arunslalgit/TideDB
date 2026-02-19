@@ -12,7 +12,7 @@ export default function PromConfig() {
   const [search, setSearch] = useState('');
 
   const fetchConfig = useCallback(async () => {
-    if (!connection || connection.type !== 'prometheus') return;
+    if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) return;
     setLoading(true);
     setError(null);
     try {
@@ -40,14 +40,16 @@ export default function PromConfig() {
     ? lines.map((line, i) => ({ line, num: i + 1, match: line.toLowerCase().includes(search.toLowerCase()) }))
     : lines.map((line, i) => ({ line, num: i + 1, match: false }));
 
-  if (!connection || connection.type !== 'prometheus') {
+  if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) {
     return <div className="flex items-center justify-center h-full text-gray-500"><p>Select a Prometheus connection.</p></div>;
   }
 
   return (
     <div className="p-6 space-y-4 max-w-7xl mx-auto">
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-semibold text-white">Running Config</h1>
+        <h1 className="text-lg font-semibold text-white">
+          {connection.type === 'victoriametrics' ? 'Runtime Flags' : 'Running Config'}
+        </h1>
         <div className="flex items-center gap-2">
           <button
             onClick={handleCopy}

@@ -1,6 +1,8 @@
 // TideDB API Client
 // Communicates with the InfluxDB 1.x HTTP API
 
+import { basePath } from '../config';
+
 export interface QueryResult {
   results: Array<{
     statement_id: number;
@@ -38,7 +40,7 @@ class TideDBClient {
   private _remoteConnection: RemoteConnection | null = null;
 
   constructor() {
-    this.baseUrl = '';
+    this.baseUrl = basePath;
   }
 
   get standaloneMode() {

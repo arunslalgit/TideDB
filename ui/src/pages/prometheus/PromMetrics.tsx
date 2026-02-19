@@ -29,7 +29,7 @@ export default function PromMetrics() {
   const [typeFilter, setTypeFilter] = useState<string>('all');
 
   const fetchMetrics = useCallback(async () => {
-    if (!connection || connection.type !== 'prometheus') return;
+    if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) return;
     setLoading(true);
     setError(null);
     try {
@@ -71,7 +71,7 @@ export default function PromMetrics() {
     sessionStorage.setItem('tsui_prom_query_prefill', metricName);
   };
 
-  if (!connection || connection.type !== 'prometheus') {
+  if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) {
     return <div className="flex items-center justify-center h-full text-gray-500"><p>Select a Prometheus connection.</p></div>;
   }
 

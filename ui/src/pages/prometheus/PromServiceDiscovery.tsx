@@ -20,7 +20,7 @@ export default function PromServiceDiscovery() {
   const [showDropped, setShowDropped] = useState(false);
 
   const fetchTargets = useCallback(async () => {
-    if (!connection || connection.type !== 'prometheus') return;
+    if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) return;
     setLoading(true);
     setError(null);
     try {
@@ -77,7 +77,7 @@ export default function PromServiceDiscovery() {
         g.activeTargets.some((t) => t.scrapeUrl.toLowerCase().includes(search.toLowerCase())))
     : groups;
 
-  if (!connection || connection.type !== 'prometheus') {
+  if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) {
     return <div className="flex items-center justify-center h-full text-gray-500"><p>Select a Prometheus connection.</p></div>;
   }
 
