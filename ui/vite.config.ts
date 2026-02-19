@@ -15,6 +15,11 @@ export default defineConfig({
       '/write': 'http://localhost:8086',
       '/ping': 'http://localhost:8086',
       '/debug': 'http://localhost:8086',
+      '/proxy/influxdb': 'http://localhost:8080',
+      '/proxy/prometheus': 'http://localhost:8080',
+      '/proxy/alertmanager': 'http://localhost:8080',
+      '/api/mode': 'http://localhost:8080',
+      '/api/v1': 'http://localhost:8080',
     },
   },
 });

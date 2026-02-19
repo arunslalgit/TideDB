@@ -2,12 +2,14 @@ TimeseriesUI
 Copyright 2025 TimeseriesUI Contributors
 
 This software is an original work created independently.
-It is not derived from, and contains no code from, InfluxDB or any other
-third-party project. It communicates with InfluxDB-compatible databases
-solely through their published HTTP APIs.
+It is not derived from, and contains no code from, InfluxDB, Prometheus,
+or any other third-party project. It communicates with InfluxDB-compatible
+and Prometheus-compatible databases solely through their published HTTP APIs.
 
 "InfluxDB" is a trademark of InfluxData, Inc.
-TimeseriesUI is NOT affiliated with, endorsed by, or supported by InfluxData, Inc.
+"Prometheus" is a trademark of The Linux Foundation.
+TimeseriesUI is NOT affiliated with, endorsed by, or supported by
+InfluxData, Inc. or the Prometheus Authors.
 
 Third-party frontend dependencies (npm packages) are listed in ui/package.json
 and are governed by their respective licenses. Key dependencies include:

@@ -1,20 +1,35 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Trash2, Check, X, Server, ChevronDown, ChevronUp, Pencil } from 'lucide-react';
+import { Plus, Trash2, Check, X, Server, ChevronDown, ChevronUp, Pencil, Database, Flame } from 'lucide-react';
 import { client, type RemoteConnection } from '../api/client';
 
-// ── Persisted connection (has a name + id on top of RemoteConnection) ────────
+// ── Connection type ─────────────────────────────────────────────────────────
+
+export type BackendType = 'influxdb' | 'prometheus';
 
 export interface SavedConnection extends RemoteConnection {
   id: string;
   name: string;
+  type: BackendType;
+  source: 'browser' | 'cli';
+  alertmanagerUrl?: string;
+  alertmanagerUsername?: string;
+  alertmanagerPassword?: string;
 }
 
-const STORAGE_KEY = 'tidedb-connections';
-const ACTIVE_KEY = 'tidedb-active-connection';
+const STORAGE_KEY = 'timeseriesui_connections';
+const ACTIVE_KEY = 'timeseriesui_active_connection';
 
 function loadConnections(): SavedConnection[] {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
+    // Also try legacy key
+    const data = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('tidedb-connections');
+    const conns = JSON.parse(data || '[]');
+    // Migrate: add type field if missing
+    return conns.map((c: any) => ({
+      ...c,
+      type: c.type || 'influxdb',
+      source: c.source || 'browser',
+    }));
   } catch {
     return [];
   }
@@ -25,7 +40,7 @@ function saveConnections(conns: SavedConnection[]) {
 }
 
 function loadActiveId(): string | null {
-  return localStorage.getItem(ACTIVE_KEY);
+  return localStorage.getItem(ACTIVE_KEY) || localStorage.getItem('tidedb-active-connection');
 }
 
 function saveActiveId(id: string | null) {
@@ -37,10 +52,10 @@ function generateId() {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
-// ── Component ────────────────────────────────────────────────────────────────
+// ── Component ───────────────────────────────────────────────────────────────
 
 interface ConnectionManagerProps {
-  onConnectionChange: () => void;
+  onConnectionChange: (conn: SavedConnection | null) => void;
   defaultUrl?: string;
 }
 
@@ -48,13 +63,52 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
   const [connections, setConnections] = useState<SavedConnection[]>(loadConnections);
   const [activeId, setActiveId] = useState<string | null>(loadActiveId);
   const [open, setOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null); // null = not editing, 'new' = adding
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   // Form fields
   const [formName, setFormName] = useState('');
   const [formUrl, setFormUrl] = useState('');
   const [formUser, setFormUser] = useState('');
   const [formPass, setFormPass] = useState('');
+  const [formType, setFormType] = useState<BackendType>('influxdb');
+  const [formAMUrl, setFormAMUrl] = useState('');
+
+  // Merge CLI connections on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch('/api/v1/connections');
+        if (res.ok) {
+          const cliConns: any[] = await res.json();
+          if (Array.isArray(cliConns) && cliConns.length > 0) {
+            setConnections((prev) => {
+              const existingUrls = new Set(prev.map((c) => c.url));
+              const newConns = cliConns
+                .filter((c) => !existingUrls.has(c.url))
+                .map((c) => ({
+                  id: generateId(),
+                  name: c.name || 'CLI Connection',
+                  type: (c.type || 'influxdb') as BackendType,
+                  url: c.url,
+                  username: c.username || '',
+                  password: c.password || '',
+                  source: 'cli' as const,
+                  alertmanagerUrl: c.alertmanagerUrl,
+                  alertmanagerUsername: c.alertmanagerUsername,
+                  alertmanagerPassword: c.alertmanagerPassword,
+                }));
+              if (newConns.length === 0) return prev;
+              const merged = [...prev, ...newConns];
+              saveConnections(merged);
+              return merged;
+            });
+          }
+        }
+      } catch {
+        // ignore
+      }
+    })();
+  }, []);
 
   // If there's a defaultUrl from the server and no connections saved, auto-add it.
   useEffect(() => {
@@ -62,9 +116,11 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
       const conn: SavedConnection = {
         id: generateId(),
         name: 'Default',
+        type: 'influxdb',
         url: defaultUrl,
         username: '',
         password: '',
+        source: 'browser',
       };
       const updated = [conn];
       setConnections(updated);
@@ -74,18 +130,16 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sync active connection to client whenever it changes.
   const syncToClient = useCallback((conns: SavedConnection[], id: string | null) => {
     const active = conns.find((c) => c.id === id) || null;
-    if (active) {
+    if (active && active.type === 'influxdb') {
       client.setRemoteConnection({ url: active.url, username: active.username, password: active.password });
-    } else {
+    } else if (!active) {
       client.setRemoteConnection(null);
     }
-    onConnectionChange();
+    onConnectionChange(active);
   }, [onConnectionChange]);
 
-  // On mount, sync.
   useEffect(() => {
     syncToClient(connections, activeId);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -101,14 +155,13 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
     setFormUrl('');
     setFormUser('');
     setFormPass('');
+    setFormType('influxdb');
+    setFormAMUrl('');
     setEditingId(null);
   };
 
   const startAdd = () => {
-    setFormName('');
-    setFormUrl('');
-    setFormUser('');
-    setFormPass('');
+    resetForm();
     setEditingId('new');
   };
 
@@ -117,6 +170,8 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
     setFormUrl(conn.url);
     setFormUser(conn.username);
     setFormPass(conn.password);
+    setFormType(conn.type);
+    setFormAMUrl(conn.alertmanagerUrl || '');
     setEditingId(conn.id);
   };
 
@@ -129,14 +184,16 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
       const conn: SavedConnection = {
         id: generateId(),
         name: trimmedName,
+        type: formType,
         url: trimmedUrl,
         username: formUser,
         password: formPass,
+        source: 'browser',
+        alertmanagerUrl: formType === 'prometheus' ? formAMUrl.trim() || undefined : undefined,
       };
       const updated = [...connections, conn];
       setConnections(updated);
       saveConnections(updated);
-      // Auto-activate if it's the first connection.
       if (updated.length === 1 || !activeId) {
         setActiveId(conn.id);
         saveActiveId(conn.id);
@@ -145,7 +202,15 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
     } else {
       const updated = connections.map((c) =>
         c.id === editingId
-          ? { ...c, name: trimmedName, url: trimmedUrl, username: formUser, password: formPass }
+          ? {
+              ...c,
+              name: trimmedName,
+              type: formType,
+              url: trimmedUrl,
+              username: formUser,
+              password: formPass,
+              alertmanagerUrl: formType === 'prometheus' ? formAMUrl.trim() || undefined : undefined,
+            }
           : c,
       );
       setConnections(updated);
@@ -158,6 +223,8 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
   };
 
   const removeConnection = (id: string) => {
+    const conn = connections.find((c) => c.id === id);
+    if (conn?.source === 'cli') return; // Can't delete CLI connections
     const updated = connections.filter((c) => c.id !== id);
     setConnections(updated);
     saveConnections(updated);
@@ -172,6 +239,11 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
 
   const activeConn = connections.find((c) => c.id === activeId);
 
+  const TypeIcon = ({ type }: { type: BackendType }) => {
+    if (type === 'prometheus') return <Flame size={10} className="text-orange-400 flex-shrink-0" />;
+    return <Database size={10} className="text-blue-400 flex-shrink-0" />;
+  };
+
   return (
     <div>
       <button
@@ -180,14 +252,20 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
       >
         <span className="flex items-center gap-1.5 truncate">
           <Server size={12} className="flex-shrink-0" />
-          {activeConn ? activeConn.name : 'Connections'}
+          {activeConn ? (
+            <span className="flex items-center gap-1">
+              <TypeIcon type={activeConn.type} />
+              {activeConn.name}
+            </span>
+          ) : (
+            'Connections'
+          )}
         </span>
         {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
       </button>
 
       {open && (
         <div className="mt-1 px-1 space-y-1">
-          {/* Connection list */}
           {connections.map((conn) => (
             <div
               key={conn.id}
@@ -200,33 +278,67 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
               <button
                 onClick={() => activateConnection(conn.id)}
                 className="flex-1 text-left truncate text-gray-200"
-                title={conn.url}
+                title={`${conn.type}: ${conn.url}`}
               >
-                <span className="font-medium">{conn.name}</span>
+                <span className="font-medium flex items-center gap-1">
+                  <TypeIcon type={conn.type} />
+                  {conn.name}
+                  {conn.source === 'cli' && (
+                    <span className="text-[9px] bg-gray-700 text-gray-400 px-1 rounded">CLI</span>
+                  )}
+                </span>
                 <span className="block text-gray-500 truncate text-[10px]">{conn.url}</span>
               </button>
               <div className="flex items-center gap-0.5 flex-shrink-0">
-                <button
-                  onClick={() => startEdit(conn)}
-                  className="p-1 text-gray-500 hover:text-gray-200 transition-colors"
-                  title="Edit"
-                >
-                  <Pencil size={10} />
-                </button>
-                <button
-                  onClick={() => removeConnection(conn.id)}
-                  className="p-1 text-gray-500 hover:text-red-400 transition-colors"
-                  title="Remove"
-                >
-                  <Trash2 size={10} />
-                </button>
+                {conn.source !== 'cli' && (
+                  <>
+                    <button
+                      onClick={() => startEdit(conn)}
+                      className="p-1 text-gray-500 hover:text-gray-200 transition-colors"
+                      title="Edit"
+                    >
+                      <Pencil size={10} />
+                    </button>
+                    <button
+                      onClick={() => removeConnection(conn.id)}
+                      className="p-1 text-gray-500 hover:text-red-400 transition-colors"
+                      title="Remove"
+                    >
+                      <Trash2 size={10} />
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           ))}
 
-          {/* Add / Edit form */}
           {editingId ? (
             <div className="space-y-1.5 pt-1 border-t border-gray-700 mt-1">
+              {/* Type selector */}
+              <div className="flex gap-1">
+                <button
+                  onClick={() => setFormType('influxdb')}
+                  className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded text-xs font-medium transition-colors ${
+                    formType === 'influxdb'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-800 text-gray-400 hover:text-white border border-gray-700'
+                  }`}
+                >
+                  <Database size={10} />
+                  InfluxDB
+                </button>
+                <button
+                  onClick={() => setFormType('prometheus')}
+                  className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded text-xs font-medium transition-colors ${
+                    formType === 'prometheus'
+                      ? 'bg-orange-600 text-white'
+                      : 'bg-gray-800 text-gray-400 hover:text-white border border-gray-700'
+                  }`}
+                >
+                  <Flame size={10} />
+                  Prometheus
+                </button>
+              </div>
               <input
                 type="text"
                 placeholder="Name (e.g. Production)"
@@ -237,7 +349,7 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
               />
               <input
                 type="text"
-                placeholder="URL (e.g. http://localhost:8086)"
+                placeholder={formType === 'influxdb' ? 'URL (e.g. http://localhost:8086)' : 'URL (e.g. http://localhost:9090)'}
                 value={formUrl}
                 onChange={(e) => setFormUrl(e.target.value)}
                 className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
@@ -256,6 +368,15 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
                 onChange={(e) => setFormPass(e.target.value)}
                 className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
               />
+              {formType === 'prometheus' && (
+                <input
+                  type="text"
+                  placeholder="Alertmanager URL (optional)"
+                  value={formAMUrl}
+                  onChange={(e) => setFormAMUrl(e.target.value)}
+                  className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-orange-500 transition-colors"
+                />
+              )}
               <div className="flex gap-1.5">
                 <button
                   onClick={saveForm}
