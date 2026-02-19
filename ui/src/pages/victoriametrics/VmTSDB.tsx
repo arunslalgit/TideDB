@@ -96,7 +96,16 @@ export default function VmTSDB() {
         </button>
       </div>
 
-      {error && <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">{error}</div>}
+      {error && (
+        <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">
+          {error}
+          {error.includes('unsupported path') && (
+            <p className="mt-1 text-xs text-red-400">
+              Some TSDB status features may not be available on VM cluster vmselect.
+            </p>
+          )}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="rounded-lg border border-gray-800 p-4 bg-gray-900/50">

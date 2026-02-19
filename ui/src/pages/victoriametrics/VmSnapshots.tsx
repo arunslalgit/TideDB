@@ -97,7 +97,16 @@ export default function VmSnapshots() {
         </div>
       </div>
 
-      {error && <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">{error}</div>}
+      {error && (
+        <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">
+          {error}
+          {error.includes('unsupported path') && (
+            <p className="mt-1 text-xs text-red-400">
+              Snapshots are only available on single-node VictoriaMetrics. In cluster mode, snapshots must be managed on vmstorage nodes directly.
+            </p>
+          )}
+        </div>
+      )}
 
       {lastCreated && (
         <div className="p-3 rounded bg-green-900/20 border border-green-800/50 text-green-300 text-sm">

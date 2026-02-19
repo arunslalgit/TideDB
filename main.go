@@ -158,7 +158,7 @@ func main() {
 		}
 	}
 	for _, p := range []string{"/query", "/write", "/ping", "/debug/"} {
-		mux.HandleFunc(basePath+p, makeLegacyInfluxProxy(httpClient, defaultInfluxURL))
+		mux.HandleFunc(basePath+p, makeLegacyInfluxProxy(httpClient, defaultInfluxURL, basePath))
 	}
 
 	// ── Serve the embedded SPA ──────────────────────────────────────────
@@ -463,7 +463,7 @@ func makeGenericProxy(httpClient *http.Client) http.HandlerFunc {
 
 // ── Legacy InfluxDB Proxy (backward compat) ─────────────────────────────────
 
-func makeLegacyInfluxProxy(httpClient *http.Client, defaultURL string) http.HandlerFunc {
+func makeLegacyInfluxProxy(httpClient *http.Client, defaultURL string, basePath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		setCORS(w)
 		if r.Method == http.MethodOptions {
@@ -486,8 +486,12 @@ func makeLegacyInfluxProxy(httpClient *http.Client, defaultURL string) http.Hand
 			return
 		}
 
+		// Strip the base-path prefix so we forward only the InfluxDB path
+		// (e.g. /timeseries-ui/query → /query).
+		influxPath := strings.TrimPrefix(r.URL.Path, basePath)
+
 		upstream := *target
-		upstream.Path = strings.TrimRight(upstream.Path, "/") + r.URL.Path
+		upstream.Path = strings.TrimRight(upstream.Path, "/") + influxPath
 		upstream.RawQuery = r.URL.RawQuery
 
 		username := r.Header.Get("X-Influxdb-Username")

@@ -151,7 +151,14 @@ export default function PromTargets() {
       </div>
 
       {error && (
-        <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">{error}</div>
+        <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">
+          {error}
+          {error.includes('unsupported path') && (
+            <p className="mt-1 text-xs text-red-400">
+              The targets API is not available on VictoriaMetrics cluster vmselect. Use vmagent targets directly, or connect to a single-node VM instance.
+            </p>
+          )}
+        </div>
       )}
 
       {/* Target groups */}

@@ -124,7 +124,16 @@ export default function VmAdmin() {
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
       <h1 className="text-lg font-semibold text-white">Admin Operations</h1>
 
-      {error && <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">{error}</div>}
+      {error && (
+        <div className="p-3 rounded bg-red-900/30 border border-red-800 text-red-300 text-sm">
+          {error}
+          {error.includes('unsupported path') && (
+            <p className="mt-1 text-xs text-red-400">
+              This operation may not be available on VM cluster vmselect nodes. In cluster mode, admin operations must target vmstorage nodes directly.
+            </p>
+          )}
+        </div>
+      )}
       {success && <div className="p-3 rounded bg-green-900/20 border border-green-800/50 text-green-300 text-sm">{success}</div>}
 
       {/* Series Management */}
