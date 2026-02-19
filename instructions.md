@@ -1,1270 +1,1068 @@
-# TideDB: InfluxDB 1.x Fork — Implementation Specification
+# TimeseriesUI — Multi-Backend Implementation Spec
 
-## Project Overview
+## For: Claude Code / AI-assisted development
 
-TideDB is a community fork of InfluxDB OSS v1.12.2 (the latest 1.x release) with an embedded web UI, resumable downsampling, and a roadmap toward horizontal scaling. This document covers **Phase 0: Fork Setup + Embedded Web UI**.
+## Project: https://github.com/arunslalgit/TideDB/tree/claude/timeseries-ui-Vcffr
 
-The goal is to produce a single Go binary (`tided`) that, when started, serves both the existing InfluxDB 1.x HTTP API and a modern embedded web UI on the same port — zero additional components required.
-
------
-
-## Part 1: Fork and Rename
-
-### 1.1 Clone the Source
-
-```bash
-# Clone the 1.x branch specifically
-git clone --branch v1.12.2 https://github.com/influxdata/influxdb.git tidedb
-cd tidedb
-
-# Remove upstream remote
-git remote remove origin
-
-# Add your own remote
-git remote add origin git@github.com:<your-username>/tidedb.git
-
-# Create a fresh main branch
-git checkout -b main
-git push -u origin main
-```
-
-### 1.2 License Compliance
-
-This is critical. InfluxDB 1.x is dual-licensed MIT / Apache 2.0. You MUST:
-
-1. **Keep the original LICENSE file** — do NOT delete or modify it
-1. **Create a NOTICE file** in the repo root:
-
-```
-TideDB
-Copyright 2025 TideDB Contributors
-
-This product is based on InfluxDB OSS v1.12.2
-Originally developed by InfluxData, Inc.
-Copyright 2013-2025 InfluxData, Inc.
-
-Licensed under the MIT License and Apache License, Version 2.0.
-See LICENSE-MIT and LICENSE-APACHE for details.
-```
-
-1. **Rename license files** for clarity:
-- Copy the existing `LICENSE` to `LICENSE-MIT`
-- Add an `LICENSE-APACHE` file with the Apache 2.0 text
-- Keep a top-level `LICENSE` that references both
-1. **Add a FORK_NOTICE.md** explaining the lineage:
-
-```markdown
-# Fork Notice
-
-TideDB is an independent community fork of [InfluxDB OSS](https://github.com/influxdata/influxdb) v1.12.2,
-originally developed by [InfluxData, Inc](https://www.influxdata.com/).
-
-TideDB is NOT affiliated with, endorsed by, or supported by InfluxData, Inc.
-"InfluxDB" is a trademark of InfluxData, Inc.
-
-This fork exists to continue development of the 1.x line with features the
-community has long requested: an embedded web UI, resumable downsampling,
-and horizontal scaling.
-
-All original InfluxDB code retains its MIT/Apache 2.0 license.
-All new code added by TideDB contributors is licensed under Apache 2.0.
-```
-
-### 1.3 Go Module Rename
-
-Rename the Go module from `github.com/influxdata/influxdb` to your own module path. This is a large but mechanical change:
-
-```bash
-# The old module path
-OLD_MODULE="github.com/influxdata/influxdb"
-# Your new module path
-NEW_MODULE="github.com/<your-username>/tidedb"
-
-# Rename the module in go.mod
-sed -i "s|module ${OLD_MODULE}|module ${NEW_MODULE}|g" go.mod
-
-# Rename all internal imports across the entire codebase
-find . -name '*.go' -exec sed -i "s|${OLD_MODULE}|${NEW_MODULE}|g" {} +
-
-# Update go.sum
-go mod tidy
-```
-
-**Important**: This will touch hundreds of files. Commit this as a single atomic commit with message:
-
-```
-chore: rename Go module from influxdata/influxdb to <your-username>/tidedb
-```
-
-### 1.4 Binary Rename
-
-Rename the main binaries:
-
-|Old Binary      |New Binary    |Location                                   |
-|----------------|--------------|-------------------------------------------|
-|`influxd`       |`tided`       |`cmd/influxd/` → `cmd/tided/`              |
-|`influx`        |`tide`        |`cmd/influx/` → `cmd/tide/`                |
-|`influx_inspect`|`tide_inspect`|`cmd/influx_inspect/` → `cmd/tide_inspect/`|
-
-Steps:
-
-```bash
-# Rename directories
-mv cmd/influxd cmd/tided
-mv cmd/influx cmd/tide
-mv cmd/influx_inspect cmd/tide_inspect
-
-# Update all references to binary names in:
-# - Makefiles
-# - Dockerfiles
-# - systemd service files
-# - shell scripts
-# - documentation
-# - Go source code (especially main.go files and version strings)
-
-# Update the server name / branding in the HTTP response headers
-# In services/httpd/handler.go, change the X-Influxdb-Version header to X-Tidedb-Version
-```
-
-### 1.5 Version and Branding
-
-Create `internal/branding/branding.go`:
-
-```go
-package branding
-
-const (
-    ProductName    = "TideDB"
-    ServerHeader   = "X-Tidedb-Version"
-    DefaultPort    = 8086
-    UIPath         = "/ui/"
-    APIDocsURL     = "https://github.com/<your-username>/tidedb"
-)
-
-// Version is set at build time via -ldflags
-var (
-    Version   = "0.1.0"
-    Commit    = "unknown"
-    BuildDate = "unknown"
-)
-```
-
-Update the Makefile build flags:
-
-```makefile
-LDFLAGS=-ldflags "-X github.com/<your-username>/tidedb/internal/branding.Version=$(VERSION) \
-                   -X github.com/<your-username>/tidedb/internal/branding.Commit=$(COMMIT) \
-                   -X github.com/<your-username>/tidedb/internal/branding.BuildDate=$(BUILD_DATE)"
-```
-
-### 1.6 Verify the Fork Compiles and Tests Pass
-
-```bash
-# Build
-go build ./cmd/tided
-go build ./cmd/tide
-go build ./cmd/tide_inspect
-
-# Run existing tests
-go test ./...
-
-# Start the server and verify it works
-./tided run
-# In another terminal:
-curl -s http://localhost:8086/ping
-# Should return 204
-```
-
-**Do NOT proceed to Phase 0 (UI) until the renamed fork compiles cleanly and passes all existing tests.**
+## Goal: Extend TimeseriesUI from InfluxDB-only to a unified time-series UI supporting InfluxDB + Prometheus (and future backends)
 
 -----
 
-## Part 2: Embedded Web UI — Architecture
+## 1. CURRENT STATE
 
-### 2.1 Overview
-
-The UI is a React single-page application (SPA) that is compiled to static assets and embedded directly into the Go binary using Go’s `embed` package. When users navigate to `http://localhost:8086/ui/`, they get a fully functional database management interface.
-
-### 2.2 Directory Structure
+### Repository Structure
 
 ```
-tidedb/
-├── cmd/
-│   ├── tided/              # main server binary
-│   └── tide/               # CLI client
-├── ui/                     # <-- NEW: React SPA
-│   ├── src/
-│   │   ├── main.tsx
-│   │   ├── App.tsx
-│   │   ├── api/
-│   │   │   └── client.ts          # HTTP client for InfluxDB API
-│   │   ├── pages/
-│   │   │   ├── QueryExplorer.tsx   # InfluxQL query editor
-│   │   │   ├── DatabaseAdmin.tsx   # DB/RP/user management
-│   │   │   ├── WriteData.tsx       # Write interface
-│   │   │   └── SystemHealth.tsx    # Server diagnostics
-│   │   ├── components/
-│   │   │   ├── Layout.tsx          # App shell with sidebar nav
-│   │   │   ├── QueryEditor.tsx     # CodeMirror-based editor
-│   │   │   ├── ResultsTable.tsx    # Tabular query results
-│   │   │   ├── TimeSeriesChart.tsx # Line chart for results
-│   │   │   ├── SchemaTree.tsx      # DB > RP > Measurement tree
-│   │   │   ├── QueryHistory.tsx    # Recent queries list
-│   │   │   └── ConnectionBar.tsx   # Server connection status
-│   │   ├── hooks/
-│   │   │   ├── useQuery.ts         # Execute InfluxQL queries
-│   │   │   ├── useSchema.ts        # Fetch schema metadata
-│   │   │   └── useDiagnostics.ts   # Fetch server stats
-│   │   └── utils/
-│   │       ├── influxql.ts         # Query formatting helpers
-│   │       └── time.ts             # Time formatting
-│   ├── index.html
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── vite.config.ts
-│   └── tailwind.config.js
-├── services/
-│   ├── httpd/                      # existing HTTP service
-│   │   ├── handler.go              # MODIFY: add UI routes
-│   │   └── ...
-│   └── ...
-├── ui_embed.go              # <-- NEW: Go embed directive
-├── go.mod
-├── Makefile                 # MODIFY: add UI build step
-└── ...
+timeseriesui/
+├── main.go          # Go HTTP server — proxies API, embeds UI via go:embed
+├── go.mod           # No external Go dependencies (stdlib only)
+├── ui/
+│   ├── src/         # React + TypeScript source
+│   └── dist/        # Built assets (embedded into the binary at build time)
+├── bin/             # Pre-built binaries
+├── LICENSE          # Apache 2.0
+├── NOTICE
+└── README.md
 ```
 
-### 2.3 How Embedding Works
+### Current Capabilities (InfluxDB only)
 
-Create `ui_embed.go` in the repository root:
+- Multi-connection — manage multiple InfluxDB instances from sidebar
+- Query Explorer — InfluxQL editor with syntax highlighting, schema tree, table & chart
+- Database Admin — create/drop databases, retention policies, continuous queries, users
+- Write Data — paste or upload line protocol
+- System Health — live diagnostics, stats, active queries (with kill), shard groups
+- Zero server-side state — connections stored in browser localStorage; binary is stateless
 
-```go
-package tidedb
+### Key Design Principles (MUST preserve)
 
-import "embed"
-
-// UIAssets contains the compiled React SPA.
-// The embed directive includes all files from ui/dist/.
-// This is populated at build time after `npm run build` in the ui/ directory.
-//
-//go:embed ui/dist/*
-var UIAssets embed.FS
-```
-
-The build process is:
-
-1. `cd ui && npm install && npm run build` → produces `ui/dist/`
-1. `go build ./cmd/tided` → Go compiler embeds `ui/dist/*` into the binary
-1. The resulting `tided` binary is fully self-contained
+- **Single binary** — Go embeds all UI assets via `embed` package
+- **Zero Go dependencies** — stdlib `net/http` only, no external modules
+- **Stateless server** — all user state lives in browser localStorage
+- **Proxy architecture** — Go server proxies API calls to backends, solving CORS
 
 -----
 
-## Part 3: UI Frontend Implementation
+## 2. TARGET STATE
 
-### 3.1 Project Setup
+### Vision
 
-```bash
-cd ui/
+One unified time-series UI binary that supports multiple backend types. Users add connections of different types (InfluxDB, Prometheus, etc.) and get backend-specific UI pages for each. Shared components (charts, tables, connection manager) are reused across backends.
 
-# Initialize the project
-npm create vite@latest . -- --template react-ts
+### Product Name
 
-# Install dependencies
-npm install react-router-dom@6
-npm install @codemirror/lang-sql @codemirror/view @codemirror/state codemirror
-npm install @uiw/react-codemirror
-npm install recharts
-npm install lucide-react
-npm install clsx
+Keep as **TimeseriesUI** (already generic enough). The binary name stays `timeseriesui`.
 
-# Dev dependencies
-npm install -D tailwindcss @tailwindcss/vite
-npm install -D @types/react @types/react-dom
+-----
+
+## 3. CLI INTERFACE (Rich Command-Line Invocation)
+
+### Current CLI
+
+```
+timeseriesui [flags]
+  --influxdb-url string   Default InfluxDB URL
+  --port int              Port to listen on (default 8080)
 ```
 
-### 3.2 Vite Configuration
+### New CLI — Full Specification
 
-`ui/vite.config.ts`:
+```
+timeseriesui [flags]
 
-```typescript
-import { defineConfig } from 'vite';
-import react from '@vitejs/plugin-react';
-import tailwindcss from '@tailwindcss/vite';
+SERVER FLAGS:
+  --port int                    Port to listen on (default 8080)
+  --host string                 Host/IP to bind to (default "0.0.0.0")
+  --base-path string            Base URL path prefix, e.g. /tsui (default "/")
+  --tls-cert string             Path to TLS certificate file (enables HTTPS)
+  --tls-key string              Path to TLS private key file
 
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
-  base: '/ui/',
-  build: {
-    outDir: 'dist',
-    emptyOutDir: true,
-  },
-  server: {
-    proxy: {
-      '/query': 'http://localhost:8086',
-      '/write': 'http://localhost:8086',
-      '/ping': 'http://localhost:8086',
-      '/debug': 'http://localhost:8086',
+CONNECTION FLAGS (shortcuts to pre-configure default connections):
+  --influxdb-url string         Add a default InfluxDB connection
+                                Example: --influxdb-url http://localhost:8086
+  --influxdb-url string         Can be repeated for multiple instances
+                                Example: --influxdb-url http://prod:8086 --influxdb-url http://staging:8086
+  --influxdb-user string        Default InfluxDB username (applies to all --influxdb-url)
+  --influxdb-password string    Default InfluxDB password
+  --influxdb-name string        Display name for the InfluxDB connection (default: auto from URL)
+
+  --prometheus-url string       Add a default Prometheus connection
+                                Example: --prometheus-url http://localhost:9090
+  --prometheus-url string       Can be repeated for multiple instances
+                                Example: --prometheus-url http://prod-prom:9090 --prometheus-url http://staging-prom:9090
+  --prometheus-name string      Display name for the Prometheus connection (default: auto from URL)
+  --prometheus-user string      Default Prometheus basic-auth username
+  --prometheus-password string  Default Prometheus basic-auth password
+
+  --alertmanager-url string     Add a default Alertmanager connection (linked to Prometheus)
+                                Example: --alertmanager-url http://localhost:9093
+
+MULTI-CONNECTION SHORTHAND:
+  --connections string          Path to a JSON/YAML connections file
+                                Example: --connections ./connections.json
+
+LOGGING & DEBUG:
+  --log-level string            Log verbosity: debug, info, warn, error (default "info")
+  --log-format string           Log format: text, json (default "text")
+  --proxy-timeout duration      Timeout for proxied API requests (default 30s)
+  --max-response-size string    Max proxied response size (default "50MB")
+
+FEATURE FLAGS:
+  --disable-write               Disable the Write Data feature (read-only mode)
+  --disable-admin               Disable admin/destructive operations (drop DB, kill query)
+  --readonly                    Shorthand for --disable-write --disable-admin
+
+META:
+  --version                     Print version and exit
+  --help                        Print help and exit
+```
+
+### Connections File Format (–connections)
+
+```json
+{
+  "connections": [
+    {
+      "name": "Production InfluxDB",
+      "type": "influxdb",
+      "url": "https://influx-prod.example.com:8086",
+      "username": "admin",
+      "password": "secret",
+      "defaultDatabase": "telegraf"
     },
-  },
-});
+    {
+      "name": "Staging InfluxDB",
+      "type": "influxdb",
+      "url": "http://influx-staging:8086"
+    },
+    {
+      "name": "Production Prometheus",
+      "type": "prometheus",
+      "url": "http://prometheus-prod:9090",
+      "alertmanagerUrl": "http://alertmanager-prod:9093"
+    },
+    {
+      "name": "Dev Prometheus",
+      "type": "prometheus",
+      "url": "http://prometheus-dev:9090"
+    }
+  ]
+}
 ```
 
-**Key: `base: '/ui/'`** — This ensures all asset paths are prefixed with `/ui/` so they work when served by the Go server.
+### CLI Usage Examples
 
-### 3.3 Tailwind CSS
+```bash
+# Simplest — start empty, add connections in browser
+./timeseriesui
 
-`ui/src/main.css`:
+# Quick start with one InfluxDB
+./timeseriesui --influxdb-url http://localhost:8086
 
-```css
-@import "tailwindcss";
+# Quick start with one Prometheus
+./timeseriesui --prometheus-url http://localhost:9090
+
+# Both backends at once
+./timeseriesui \
+  --influxdb-url http://localhost:8086 \
+  --prometheus-url http://localhost:9090
+
+# Multiple Prometheus instances
+./timeseriesui \
+  --prometheus-url http://prom-prod:9090 \
+  --prometheus-url http://prom-staging:9090 \
+  --prometheus-url http://prom-dev:9090
+
+# Production setup: HTTPS, read-only, multiple backends
+./timeseriesui \
+  --port 443 \
+  --tls-cert /etc/ssl/cert.pem \
+  --tls-key /etc/ssl/key.pem \
+  --readonly \
+  --connections /etc/timeseriesui/connections.json
+
+# Behind a reverse proxy at /tsui/
+./timeseriesui --base-path /tsui --port 3000
+
+# With Alertmanager
+./timeseriesui \
+  --prometheus-url http://prometheus:9090 \
+  --alertmanager-url http://alertmanager:9093
 ```
 
-### 3.4 Entry Point
+-----
 
-`ui/index.html`:
+## 4. GO SERVER CHANGES (main.go)
 
-```html
-<!DOCTYPE html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TideDB</title>
-    <link rel="icon" type="image/svg+xml" href="/ui/favicon.svg" />
-  </head>
-  <body class="bg-gray-950 text-gray-100 antialiased">
-    <div id="root"></div>
-    <script type="module" src="/ui/src/main.tsx"></script>
-  </body>
-</html>
+### 4.1 Route Architecture
+
+```
+HTTP Routes:
+  /                           → Serve embedded React SPA
+  /ui/*                       → Serve embedded React SPA (existing)
+  /api/v1/connections         → GET: return CLI-provided default connections as JSON
+  /api/v1/health              → GET: server health check
+
+  /proxy/influxdb/*           → Reverse proxy to InfluxDB URL
+    Client sends: POST /proxy/influxdb/?target=http://myinflux:8086&path=/query&db=mydb&q=SHOW+DATABASES
+    Server proxies to: http://myinflux:8086/query?db=mydb&q=SHOW+DATABASES
+
+  /proxy/prometheus/*         → Reverse proxy to Prometheus URL
+    Client sends: GET /proxy/prometheus/?target=http://myprom:9090&path=/api/v1/query&query=up
+    Server proxies to: http://myprom:9090/api/v1/query?query=up
+
+  /proxy/alertmanager/*       → Reverse proxy to Alertmanager URL
+    Client sends: GET /proxy/alertmanager/?target=http://myam:9093&path=/api/v2/alerts
+    Server proxies to: http://myam:9093/api/v2/alerts
 ```
 
-`ui/src/main.tsx`:
+### 4.2 Proxy Handler (Generic)
 
-```tsx
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
-import App from './App';
-import './main.css';
+The proxy should be **generic** — one handler that:
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <BrowserRouter basename="/ui">
-      <App />
-    </BrowserRouter>
-  </React.StrictMode>
-);
+1. Reads `target` query param (the backend URL)
+1. Reads `path` query param (the API path to call on the backend)
+1. Forwards all other query params, headers, and body
+1. Returns the response with proper CORS headers
+
+This means the Go server does NOT need to know about InfluxDB or Prometheus APIs specifically. It’s a dumb proxy. The React frontend constructs the right API calls.
+
+```go
+// Pseudocode for the proxy handler
+func proxyHandler(w http.ResponseWriter, r *http.Request) {
+    target := r.URL.Query().Get("target")    // e.g. http://prometheus:9090
+    apiPath := r.URL.Query().Get("path")     // e.g. /api/v1/query
+
+    // Build destination URL
+    destURL := target + apiPath
+
+    // Copy remaining query params (exclude target and path)
+    params := r.URL.Query()
+    params.Del("target")
+    params.Del("path")
+    destURL += "?" + params.Encode()
+
+    // Create proxy request with same method, headers, body
+    proxyReq, _ := http.NewRequest(r.Method, destURL, r.Body)
+    // Copy relevant headers (Authorization, Content-Type, etc.)
+
+    // Execute and stream response back
+    resp, err := httpClient.Do(proxyReq)
+    // Copy response status, headers, body back to w
+}
 ```
 
-### 3.5 API Client
+### 4.3 Default Connections Endpoint
 
-`ui/src/api/client.ts`:
+```go
+// GET /api/v1/connections returns CLI-configured connections
+// The frontend merges these with localStorage connections
+// CLI connections are marked as "source": "cli" and cannot be deleted in the UI
+func connectionsHandler(w http.ResponseWriter, r *http.Request) {
+    json.NewEncoder(w).Encode(cliConnections)
+}
+```
+
+### 4.4 Security Considerations
+
+- The proxy must validate that `target` URLs use http:// or https:// schemes only
+- Optional: allow-list of target URLs if `--connections` file is provided
+- Rate limiting on proxy requests (use –proxy-timeout)
+- Strip sensitive headers from proxy responses
+- Do NOT proxy to localhost/127.0.0.1 unless explicitly allowed (SSRF protection)
+  - Exception: if –influxdb-url or –prometheus-url explicitly points to localhost
+
+-----
+
+## 5. FRONTEND ARCHITECTURE
+
+### 5.1 Connection Model
 
 ```typescript
-// TideDB API Client
-// Communicates with the InfluxDB 1.x HTTP API
+// types/connection.ts
 
-export interface QueryResult {
-  results: Array<{
-    statement_id: number;
-    series?: Array<{
-      name: string;
-      tags?: Record<string, string>;
-      columns: string[];
-      values: any[][];
-    }>;
-    error?: string;
-  }>;
+type BackendType = 'influxdb' | 'prometheus';
+
+interface BaseConnection {
+  id: string;                    // UUID, auto-generated
+  name: string;                  // Display name
+  type: BackendType;             // Backend type
+  url: string;                   // Base URL (e.g. http://prometheus:9090)
+  username?: string;             // Basic auth username
+  password?: string;             // Basic auth password
+  source: 'browser' | 'cli';    // Where this connection came from
+  color?: string;                // Optional sidebar accent color
+  createdAt: string;             // ISO timestamp
+  lastUsedAt?: string;           // ISO timestamp
 }
 
-export interface DiagnosticsResult {
-  [section: string]: {
-    columns: string[];
-    rows: any[][];
-  };
+interface InfluxDBConnection extends BaseConnection {
+  type: 'influxdb';
+  defaultDatabase?: string;      // Auto-select this DB
+  version?: string;              // Detected version (1.x, 2.x)
 }
 
-export interface StatsResult {
-  [key: string]: any;
+interface PrometheusConnection extends BaseConnection {
+  type: 'prometheus';
+  alertmanagerUrl?: string;      // Linked Alertmanager URL
+  alertmanagerUsername?: string;
+  alertmanagerPassword?: string;
 }
 
-class TideDBClient {
-  private baseUrl: string;
-  private credentials: { username?: string; password?: string } = {};
-
-  constructor() {
-    // When served embedded, the API is on the same origin
-    this.baseUrl = '';
-  }
-
-  setCredentials(username: string, password: string) {
-    this.credentials = { username, password };
-  }
-
-  private getAuthParams(): string {
-    const params = new URLSearchParams();
-    if (this.credentials.username) {
-      params.set('u', this.credentials.username);
-    }
-    if (this.credentials.password) {
-      params.set('p', this.credentials.password);
-    }
-    return params.toString();
-  }
-
-  async ping(): Promise<{ version: string; ok: boolean }> {
-    try {
-      const res = await fetch(`${this.baseUrl}/ping`);
-      return {
-        version: res.headers.get('X-Tidedb-Version') || res.headers.get('X-Influxdb-Version') || 'unknown',
-        ok: res.status === 204,
-      };
-    } catch {
-      return { version: 'unknown', ok: false };
-    }
-  }
-
-  async query(q: string, db?: string, epoch?: string): Promise<QueryResult> {
-    const params = new URLSearchParams();
-    params.set('q', q);
-    if (db) params.set('db', db);
-    if (epoch) params.set('epoch', epoch);
-
-    const authParams = this.getAuthParams();
-    if (authParams) {
-      const authParsed = new URLSearchParams(authParams);
-      authParsed.forEach((v, k) => params.set(k, v));
-    }
-
-    const res = await fetch(`${this.baseUrl}/query?${params.toString()}`, {
-      method: 'POST',
-      headers: { 'Accept': 'application/json' },
-    });
-
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Query failed (${res.status}): ${text}`);
-    }
-
-    return res.json();
-  }
-
-  async write(db: string, data: string, precision: string = 'ns', rp?: string): Promise<void> {
-    const params = new URLSearchParams();
-    params.set('db', db);
-    params.set('precision', precision);
-    if (rp) params.set('rp', rp);
-
-    const authParams = this.getAuthParams();
-    if (authParams) {
-      const authParsed = new URLSearchParams(authParams);
-      authParsed.forEach((v, k) => params.set(k, v));
-    }
-
-    const res = await fetch(`${this.baseUrl}/write?${params.toString()}`, {
-      method: 'POST',
-      body: data,
-    });
-
-    if (!res.ok && res.status !== 204) {
-      const text = await res.text();
-      throw new Error(`Write failed (${res.status}): ${text}`);
-    }
-  }
-
-  async getDiagnostics(): Promise<QueryResult> {
-    return this.query('SHOW DIAGNOSTICS');
-  }
-
-  async getStats(): Promise<QueryResult> {
-    return this.query('SHOW STATS');
-  }
-
-  async getDatabases(): Promise<string[]> {
-    const result = await this.query('SHOW DATABASES');
-    const series = result.results?.[0]?.series?.[0];
-    if (!series) return [];
-    return series.values.map((v: any[]) => v[0] as string);
-  }
-
-  async getRetentionPolicies(db: string): Promise<any[]> {
-    const result = await this.query(`SHOW RETENTION POLICIES ON "${db}"`);
-    const series = result.results?.[0]?.series?.[0];
-    if (!series) return [];
-    return series.values.map((v: any[]) => {
-      const rp: Record<string, any> = {};
-      series.columns.forEach((col: string, i: number) => {
-        rp[col] = v[i];
-      });
-      return rp;
-    });
-  }
-
-  async getMeasurements(db: string): Promise<string[]> {
-    const result = await this.query('SHOW MEASUREMENTS', db);
-    const series = result.results?.[0]?.series?.[0];
-    if (!series) return [];
-    return series.values.map((v: any[]) => v[0] as string);
-  }
-
-  async getTagKeys(db: string, measurement: string): Promise<string[]> {
-    const result = await this.query(`SHOW TAG KEYS FROM "${measurement}"`, db);
-    const series = result.results?.[0]?.series?.[0];
-    if (!series) return [];
-    return series.values.map((v: any[]) => v[0] as string);
-  }
-
-  async getFieldKeys(db: string, measurement: string): Promise<Array<{ key: string; type: string }>> {
-    const result = await this.query(`SHOW FIELD KEYS FROM "${measurement}"`, db);
-    const series = result.results?.[0]?.series?.[0];
-    if (!series) return [];
-    return series.values.map((v: any[]) => ({ key: v[0], type: v[1] }));
-  }
-
-  async getSeriesCardinality(db: string): Promise<number> {
-    const result = await this.query('SHOW SERIES CARDINALITY', db);
-    const series = result.results?.[0]?.series?.[0];
-    if (!series) return 0;
-    return series.values[0][0] as number;
-  }
-
-  async getRunningQueries(): Promise<any[]> {
-    const result = await this.query('SHOW QUERIES');
-    const series = result.results?.[0]?.series?.[0];
-    if (!series) return [];
-    return series.values.map((v: any[]) => {
-      const q: Record<string, any> = {};
-      series.columns.forEach((col: string, i: number) => {
-        q[col] = v[i];
-      });
-      return q;
-    });
-  }
-
-  async killQuery(queryId: number): Promise<void> {
-    await this.query(`KILL QUERY ${queryId}`);
-  }
-
-  async getDebugVars(): Promise<any> {
-    const res = await fetch(`${this.baseUrl}/debug/vars`);
-    return res.json();
-  }
-
-  async getContinuousQueries(db?: string): Promise<any[]> {
-    const result = await this.query('SHOW CONTINUOUS QUERIES', db);
-    return result.results?.[0]?.series || [];
-  }
-
-  async getShardGroups(): Promise<any[]> {
-    const result = await this.query('SHOW SHARD GROUPS');
-    const series = result.results?.[0]?.series?.[0];
-    if (!series) return [];
-    return series.values.map((v: any[]) => {
-      const sg: Record<string, any> = {};
-      series.columns.forEach((col: string, i: number) => {
-        sg[col] = v[i];
-      });
-      return sg;
-    });
-  }
-
-  async getUsers(): Promise<any[]> {
-    const result = await this.query('SHOW USERS');
-    const series = result.results?.[0]?.series?.[0];
-    if (!series) return [];
-    return series.values.map((v: any[]) => ({
-      user: v[0],
-      admin: v[1],
-    }));
-  }
-}
-
-export const client = new TideDBClient();
-export default client;
+type Connection = InfluxDBConnection | PrometheusConnection;
 ```
 
-### 3.6 App Shell and Routing
+### 5.2 localStorage Schema
 
-`ui/src/App.tsx`:
+```typescript
+// Key: "timeseriesui_connections"
+// Value: Connection[] (JSON stringified)
 
-```tsx
-import React from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
-import Layout from './components/Layout';
-import QueryExplorer from './pages/QueryExplorer';
-import DatabaseAdmin from './pages/DatabaseAdmin';
-import WriteData from './pages/WriteData';
-import SystemHealth from './pages/SystemHealth';
+// Key: "timeseriesui_settings"
+// Value: { theme: 'light'|'dark', defaultView: string, ... }
 
-export default function App() {
-  return (
-    <Layout>
-      <Routes>
-        <Route path="/" element={<Navigate to="/explore" replace />} />
-        <Route path="/explore" element={<QueryExplorer />} />
-        <Route path="/admin" element={<DatabaseAdmin />} />
-        <Route path="/write" element={<WriteData />} />
-        <Route path="/health" element={<SystemHealth />} />
-      </Routes>
-    </Layout>
-  );
-}
+// Key: "timeseriesui_query_history_<connectionId>"
+// Value: { query: string, timestamp: string }[]
+
+// Key: "timeseriesui_active_connection"
+// Value: string (connection ID)
 ```
 
-### 3.7 Layout Component
-
-`ui/src/components/Layout.tsx`:
-
-Build a sidebar navigation layout with these characteristics:
-
-- **Sidebar** (left, 240px wide, dark background `bg-gray-900`):
-  - TideDB logo/name at top with version number (fetched from `/ping` header)
-  - Navigation links with icons (use `lucide-react` icons):
-    - **Explore** (`/explore`) — `Terminal` icon — the query explorer
-    - **Admin** (`/admin`) — `Database` icon — database/RP management
-    - **Write** (`/write`) — `PenLine` icon — write data interface
-    - **Health** (`/health`) — `Activity` icon — system diagnostics
-  - Connection status indicator at bottom (green dot = connected, red = disconnected)
-  - Credentials input (collapsible) for username/password authentication
-- **Main content area** (right, fills remaining space):
-  - Renders the active page component via `{children}`
-
-Design notes:
-
-- Use a dark color scheme throughout: `bg-gray-950` for body, `bg-gray-900` for sidebar, `bg-gray-800` for cards/panels
-- Active nav link gets `bg-gray-800` background with a left blue border accent
-- Responsive: on mobile, sidebar collapses to a hamburger menu
-
-### 3.8 Query Explorer Page
-
-`ui/src/pages/QueryExplorer.tsx`:
-
-This is the most important page. It has a **three-panel layout**:
+### 5.3 React Router Structure
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  [Database Dropdown ▼]  [RP Dropdown ▼]  [Epoch ▼]      │
-├─────────────┬────────────────────────────────────────────│
-│             │  InfluxQL Query Editor (CodeMirror)        │
-│  Schema     │  ┌──────────────────────────────────────┐  │
-│  Explorer   │  │ SELECT mean("usage_idle")            │  │
-│             │  │ FROM "cpu"                           │  │
-│  ▸ telegraf │  │ WHERE time > now() - 1h             │  │
-│    ▸ autogen│  │ GROUP BY time(5m), "host"           │  │
-│      ▸ cpu  │  └──────────────────────────────────────┘  │
-│        usage│  [▶ Execute] [Format] [History ▼]          │
-│        ...  │────────────────────────────────────────────│
-│      ▸ mem  │  Results                                   │
-│      ▸ disk │  [Table] [Chart] tabs                      │
-│             │                                            │
-│    ▸ 30d_rp │  ┌──────────────────────────────────────┐  │
-│             │  │ (table or time-series chart here)    │  │
-│             │  │                                      │  │
-│             │  └──────────────────────────────────────┘  │
-│             │  Query took: 23ms | 1,234 rows returned    │
-└─────────────┴────────────────────────────────────────────┘
+/                                    → Redirect to /ui/
+/ui/                                 → Landing / connection list (if none active)
+
+## InfluxDB Pages (existing — move under /ui/influxdb/)
+/ui/influxdb/query                   → InfluxQL Query Explorer
+/ui/influxdb/databases               → Database Admin
+/ui/influxdb/write                   → Write Data
+/ui/influxdb/health                  → System Health / Diagnostics
+/ui/influxdb/users                   → User Management
+/ui/influxdb/retention               → Retention Policies
+/ui/influxdb/continuous-queries      → Continuous Queries
+
+## Prometheus Pages (NEW)
+/ui/prometheus/query                 → PromQL Query Explorer
+/ui/prometheus/targets               → Scrape Targets
+/ui/prometheus/alerts                → Alert Rules (from Prometheus)
+/ui/prometheus/alertmanager          → Alertmanager (firing alerts, silences)
+/ui/prometheus/tsdb                  → TSDB Status & Health
+/ui/prometheus/config                → Running Config (read-only)
+/ui/prometheus/flags                 → Command Flags
+/ui/prometheus/metrics               → Metric Metadata Explorer
+/ui/prometheus/service-discovery     → Service Discovery Status
+
+## Shared Pages
+/ui/settings                         → App settings, theme
+/ui/connections                      → Connection manager (add/edit/remove)
 ```
 
-**Schema Explorer** (left panel, ~250px):
-
-- Tree structure: Database > Retention Policy > Measurement > Fields/Tags
-- Load databases on mount via `SHOW DATABASES`
-- Lazy-load children: clicking a database loads RPs via `SHOW RETENTION POLICIES`, clicking RP loads measurements via `SHOW MEASUREMENTS`, clicking measurement loads fields via `SHOW FIELD KEYS` and tags via `SHOW TAG KEYS`
-- Clicking on a measurement name inserts it into the query editor
-- Clicking on a field name inserts it into the SELECT clause
-- Show field types next to field names (float, integer, string, boolean) with color coding
-
-**Query Editor** (top right):
-
-- Use `@uiw/react-codemirror` with SQL language mode
-- SQL/InfluxQL syntax highlighting
-- Multi-line support
-- Keyboard shortcut: Ctrl+Enter / Cmd+Enter to execute
-- Execute button runs the query against the selected database
-- Format button auto-formats the query (basic indentation)
-- History dropdown shows last 30 queries stored in localStorage
-- When clicking a schema tree item, intelligently insert into the editor
-
-**Results Panel** (bottom right):
-
-- Two tabs: **Table** and **Chart**
-- **Table view**: Render `columns` as headers and `values` as rows. Support sorting by clicking column headers. Show row count.
-- **Chart view**: If the results include a `time` column, render a time-series line chart using `recharts`. Each series (unique tag combination) is a separate line. X-axis is time, Y-axis is the value column(s).
-- Status bar at bottom: query duration, number of rows, error messages
-
-**State management**:
-
-- Store the current database selection, query text, and results in React state
-- Persist query history in `localStorage` (key: `tidedb_query_history`)
-- Persist last selected database in `localStorage`
-
-### 3.9 Database Admin Page
-
-`ui/src/pages/DatabaseAdmin.tsx`:
-
-**Three tabs**:
-
-**Tab 1: Databases & Retention Policies**
-
-- Table listing all databases
-- For each database, expandable section showing:
-  - Retention policies (name, duration, shard group duration, replication factor, default flag)
-  - Series cardinality count
-  - Buttons: Drop Database (with confirmation modal), Create Retention Policy
-- “Create Database” button opens a form:
-  - Database name (text input)
-  - Default retention policy duration (duration input, e.g., “30d”, “INF”)
-  - Execute `CREATE DATABASE "name" WITH DURATION <dur>`
-
-**Tab 2: Continuous Queries**
-
-- List all CQs grouped by database
-- Show: name, query text, resample interval
-- Buttons: Drop CQ (with confirmation)
-- Create CQ form with InfluxQL editor
-
-**Tab 3: Users**
-
-- List all users (name, admin flag)
-- Create user form (username, password, admin checkbox)
-- Grant/Revoke privileges interface
-- Drop user (with confirmation)
-
-### 3.10 Write Data Page
-
-`ui/src/pages/WriteData.tsx`:
-
-Simple interface for writing data:
+### 5.4 Sidebar Navigation
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Database: [dropdown ▼]   RP: [dropdown ▼]      │
-│  Precision: [ns/us/ms/s ▼]                      │
-│                                                  │
-│  ┌───────────────────────────────────────────┐   │
-│  │ cpu,host=server01,region=us-west          │   │
-│  │   usage_idle=98.2,usage_system=1.3        │   │
-│  │   1622505600000000000                     │   │
-│  │                                           │   │
-│  │ (enter line protocol here)                │   │
-│  └───────────────────────────────────────────┘   │
-│                                                  │
-│  [Write Data]  [Upload File]  [Clear]            │
-│                                                  │
-│  Status: ✅ 3 points written successfully        │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────┐
+│  🌊 TimeseriesUI         │
+│                          │
+│  CONNECTIONS             │
+│  ┌────────────────────┐  │
+│  │ 🟢 prod-influx    ▾│  │  ← Dropdown or clickable list
+│  │ 🟡 staging-influx  │  │     Icon: InfluxDB logo / color
+│  │ 🔴 prod-prometheus │  │     Icon: Prometheus flame / color
+│  │ 🟢 dev-prometheus  │  │
+│  │ + Add Connection    │  │
+│  └────────────────────┘  │
+│                          │
+│  ── active: prod-prom ── │
+│                          │
+│  📊 Query Explorer       │  ← Context-aware: shows PromQL or InfluxQL
+│  🎯 Targets              │  ← Only visible for Prometheus connections
+│  🔔 Alerts               │  ← Only visible for Prometheus connections
+│  🔕 Alertmanager         │  ← Only if alertmanagerUrl is configured
+│  💾 TSDB Status           │  ← Shows for Prometheus
+│  ⚙️  Config               │  ← Read-only config view
+│  📋 Metrics Explorer     │  ← Prometheus metric metadata
+│  🔍 Service Discovery    │  ← Prometheus SD status
+│                          │
+│  ── Settings ──          │
+│  🎨 Theme                │
+│  📡 Connections          │
+│  ℹ️  About               │
+└──────────────────────────┘
 ```
 
-Features:
+The sidebar dynamically shows/hides menu items based on the active connection’s `type`.
 
-- CodeMirror editor for line protocol input (plain text mode)
-- Database and RP dropdowns populated from the API
-- Precision selector (nanoseconds, microseconds, milliseconds, seconds)
-- Write button sends data to `/write` endpoint
-- File upload: accept `.txt` or `.lp` files, load contents into editor
-- Validation: basic line protocol syntax checking before sending
-- Success/error feedback with details
+### 5.5 Add Connection Dialog
 
-### 3.11 System Health Page
+```
+┌──────────────────────────────────────┐
+│  Add Connection                      │
+│                                      │
+│  Connection Type:                    │
+│  ┌──────────┐  ┌──────────────┐      │
+│  │ InfluxDB │  │ Prometheus   │      │  ← Toggle / tabs
+│  └──────────┘  └──────────────┘      │
+│                                      │
+│  Name:  [ My Prometheus          ]   │
+│  URL:   [ http://localhost:9090  ]   │
+│                                      │
+│  ▸ Authentication (optional)         │
+│    Username: [                    ]   │
+│    Password: [                    ]   │
+│                                      │
+│  ▸ Alertmanager (optional)           │  ← Only for Prometheus type
+│    URL: [ http://localhost:9093  ]   │
+│                                      │
+│  [ Test Connection ]  [ Save ]       │
+└──────────────────────────────────────┘
+```
 
-`ui/src/pages/SystemHealth.tsx`:
+**Test Connection** behavior per type:
 
-Dashboard showing server diagnostics. Fetches data from `/debug/vars`, `SHOW DIAGNOSTICS`, and `SHOW STATS`.
-
-**Sections**:
-
-**Server Info** (top cards row):
-
-- Version, uptime, Go version, OS/Arch
-- Current time, PID
-- Fetched from `SHOW DIAGNOSTICS`
-
-**Performance Metrics** (live-updating charts, auto-refresh every 5 seconds):
-
-- Points written per second (from `SHOW STATS` → `write` → `pointReq`)
-- Queries executed per second
-- Active write/query requests
-- Use `recharts` line charts, keep last 60 data points (5 min of history)
-
-**Storage** (table):
-
-- Per-database: number of measurements, series cardinality, number of shards
-- Disk size if available from debug vars
-
-**Active Queries** (table):
-
-- Running queries with: query ID, database, query text, duration
-- Kill button per query (calls `KILL QUERY <id>`)
-- Auto-refresh every 3 seconds
-
-**Shard Groups** (table):
-
-- ID, Database, RP, Start Time, End Time, Expiry Time
-- From `SHOW SHARD GROUPS`
-
-**Continuous Queries** (summary):
-
-- Count of CQs per database
-- Last execution time if available
+- **InfluxDB**: `GET <url>/ping` → expect 204
+- **Prometheus**: `GET <url>/api/v1/status/buildinfo` → expect JSON with `status: "success"`
+- **Alertmanager**: `GET <url>/api/v2/status` → expect JSON
 
 -----
 
-## Part 4: Go Server Integration
+## 6. PROMETHEUS UI PAGES — DETAILED SPECS
 
-### 4.1 Register UI Routes
+All Prometheus API calls go through the Go proxy:
 
-Modify `services/httpd/handler.go` to serve the embedded UI.
-
-Find the `NewHandler` function where routes are registered. Add UI routes:
-
-```go
-import (
-    "io/fs"
-    "net/http"
-    tidedb "github.com/<your-username>/tidedb"  // import root package for UIAssets
-)
-
-// In the NewHandler function or route registration, add:
-
-// Serve embedded UI assets
-uiFS, err := fs.Sub(tidedb.UIAssets, "ui/dist")
-if err != nil {
-    // handle error — this should not happen if built correctly
-    panic("failed to locate embedded UI assets: " + err.Error())
-}
-
-// File server for UI static assets
-uiFileServer := http.FileServer(http.FS(uiFS))
-
-// Register the UI route
-// Serve /ui/ and all sub-paths
-h.mux.Handle("/ui/", http.StripPrefix("/ui/", uiFileServer))
-
-// SPA fallback: for any /ui/* path that doesn't match a file, 
-// serve index.html so React Router can handle client-side routing
-h.mux.HandleFunc("/ui/", func(w http.ResponseWriter, r *http.Request) {
-    // Try to serve the actual file first
-    path := r.URL.Path[len("/ui/"):]
-    if path == "" {
-        path = "index.html"
-    }
-    
-    // Check if file exists in embedded FS
-    f, err := uiFS.Open(path)
-    if err == nil {
-        f.Close()
-        uiFileServer.ServeHTTP(w, r)
-        return
-    }
-    
-    // File doesn't exist — serve index.html for SPA routing
-    indexFile, err := uiFS.Open("index.html")
-    if err != nil {
-        http.Error(w, "UI not available", 500)
-        return
-    }
-    defer indexFile.Close()
-    
-    stat, _ := indexFile.Stat()
-    content, _ := io.ReadAll(indexFile)
-    http.ServeContent(w, r, "index.html", stat.ModTime(), bytes.NewReader(content))
-})
-
-// Redirect root /ui to /ui/
-h.mux.HandleFunc("/ui", func(w http.ResponseWriter, r *http.Request) {
-    http.Redirect(w, r, "/ui/", http.StatusMovedPermanently)
-})
+```
+Frontend calls:  /proxy/prometheus/?target=<url>&path=<api_path>&<params>
+Go proxies to:   <url><api_path>?<params>
 ```
 
-### 4.2 CORS Configuration
+### 6.1 PromQL Query Explorer (`/ui/prometheus/query`)
 
-The existing InfluxDB 1.x handler already has CORS support. Ensure it covers the UI paths. If developing the UI with `vite dev` (separate port), the proxy in vite.config.ts handles this. In production (embedded), CORS isn’t needed since everything is same-origin.
+**Prometheus API endpoints used:**
 
-### 4.3 Add UI Disable Configuration Option
-
-In the config file (`etc/config.sample.toml` and `services/httpd/config.go`):
-
-```toml
-[http]
-  # Enable the embedded web UI
-  ui-enabled = true
+```
+GET  /api/v1/query           — instant query
+GET  /api/v1/query_range     — range query
+GET  /api/v1/labels          — all label names
+GET  /api/v1/label/<name>/values — values for a label
+GET  /api/v1/series           — series matching selectors
+GET  /api/v1/metadata         — metric metadata (HELP/TYPE)
 ```
 
-```go
-// In services/httpd/config.go, add to the Config struct:
-type Config struct {
-    // ... existing fields ...
-    UIEnabled bool `toml:"ui-enabled"`
-}
+**UI Layout:**
 
-// Default to true
-func NewConfig() Config {
-    return Config{
-        // ... existing defaults ...
-        UIEnabled: true,
-    }
-}
+```
+┌─────────────────────────────────────────────────────────┐
+│  PromQL Query Editor (CodeMirror with PromQL mode)      │
+│  ┌───────────────────────────────────────────────────┐  │
+│  │ rate(http_requests_total{status="500"}[5m])       │  │
+│  └───────────────────────────────────────────────────┘  │
+│  [Execute] [Format] [Explain]   Time: [now-1h] to [now] │
+│  Step: [auto / 15s]  Format: [Table / Graph / JSON]     │
+│                                                         │
+│  ┌─ Schema Explorer (left panel) ─┐ ┌─ Results ──────┐ │
+│  │  🔍 Search metrics...          │ │                 │ │
+│  │  📊 http_requests_total        │ │  Line chart     │ │
+│  │     ├─ method: GET, POST       │ │  or data table  │ │
+│  │     ├─ status: 200, 500        │ │  or raw JSON    │ │
+│  │     └─ instance: ...           │ │                 │ │
+│  │  📊 node_cpu_seconds_total     │ │                 │ │
+│  │  📊 go_goroutines              │ │                 │ │
+│  └────────────────────────────────┘ └─────────────────┘ │
+│                                                         │
+│  Query History: [recent queries as clickable chips]      │
+└─────────────────────────────────────────────────────────┘
 ```
 
-Only register the UI routes if `UIEnabled` is true.
+**Features:**
 
-### 4.4 Startup Banner
+- PromQL syntax highlighting (use CodeMirror with `@prometheus-io/codemirror-promql` or implement basic highlighting)
+- Autocomplete for metric names, label names, label values, PromQL functions
+- Schema tree: list all metrics with their labels (from `/api/v1/metadata` and `/api/v1/series`)
+- Click metric in tree → inserts into editor
+- Time range selector: relative (last 1h, 6h, 24h, 7d) and absolute
+- Results as: line chart (time series), table, raw JSON
+- Query history stored in localStorage per connection
 
-Modify the startup log output to include the UI URL:
+### 6.2 Targets Page (`/ui/prometheus/targets`)
 
-```go
-// In cmd/tided/run/server.go or equivalent startup code
-log.Printf("TideDB %s starting", branding.Version)
-log.Printf("  HTTP API: http://%s", httpAddr)
-if config.HTTPD.UIEnabled {
-    log.Printf("  Web UI:   http://%s/ui/", httpAddr)
-}
+**API:** `GET /api/v1/targets`
+
+**UI Layout:**
+
 ```
+┌─────────────────────────────────────────────────────────┐
+│  Scrape Targets                          [Filter] [↻]   │
+│                                                         │
+│  Summary: 45 active │ 3 down │ 2 unknown               │
+│                                                         │
+│  ┌─ Job: node-exporter ──────────────────────────────┐  │
+│  │  🟢 http://10.0.1.1:9100/metrics   15ms    10s ago│  │
+│  │  🟢 http://10.0.1.2:9100/metrics   22ms    10s ago│  │
+│  │  🔴 http://10.0.1.3:9100/metrics   ERROR   10s ago│  │
+│  │     └─ "connection refused"                       │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  ┌─ Job: kube-state-metrics ─────────────────────────┐  │
+│  │  🟢 http://10.0.2.1:8080/metrics   8ms     15s ago│  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  Filter by: [Job ▾] [Status: All/Up/Down ▾] [Search]   │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Features:**
+
+- Group by job name
+- Show: endpoint URL, scrape duration, last scrape time, status (up/down), error message
+- Filter by job, status (up/down), search by URL
+- Click a target → show discovered labels vs target labels
+- Auto-refresh toggle (5s, 10s, 30s, off)
+- Summary bar with counts
+
+### 6.3 Alert Rules Page (`/ui/prometheus/alerts`)
+
+**API:** `GET /api/v1/rules`
+
+**UI Layout:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Alert Rules                             [Filter] [↻]   │
+│                                                         │
+│  Summary: 12 rules │ 2 firing │ 1 pending │ 9 inactive │
+│                                                         │
+│  ┌─ Group: kubernetes-alerts ────────────────────────┐  │
+│  │  🔴 FIRING  KubePodCrashLooping                   │  │
+│  │     expr: rate(kube_pod_container_status_          │  │
+│  │           restarts_total[5m]) > 0                  │  │
+│  │     for: 15m │ severity: critical                  │  │
+│  │     Active since: 2026-02-19T08:30:00Z             │  │
+│  │     Firing instances: 3                            │  │
+│  │                                                    │  │
+│  │  🟡 PENDING  KubeNodeNotReady                     │  │
+│  │     expr: kube_node_status_condition{...}          │  │
+│  │     for: 5m │ severity: warning                    │  │
+│  │                                                    │  │
+│  │  ⚪ INACTIVE  KubeDeploymentReplicasMismatch      │  │
+│  └───────────────────────────────────────────────────┘  │
+│                                                         │
+│  Filter: [All / Firing / Pending / Inactive]            │
+│  Also showing: Recording Rules [toggle]                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Features:**
+
+- Group by rule group name
+- Show state: firing (red), pending (yellow), inactive (grey)
+- Show PromQL expression with syntax highlighting
+- Show `for` duration, labels, annotations
+- For firing alerts: show active instances with label sets
+- Toggle between alerting rules and recording rules
+- Click expression → opens in Query Explorer
+- Filter by state, search by name
+
+### 6.4 Alertmanager Page (`/ui/prometheus/alertmanager`)
+
+**API (Alertmanager v2):**
+
+```
+GET  /api/v2/alerts           — current alerts
+GET  /api/v2/silences         — all silences
+POST /api/v2/silences         — create a silence
+DELETE /api/v2/silence/<id>   — delete a silence
+GET  /api/v2/status           — alertmanager status
+```
+
+**UI Layout:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Alertmanager                                     [↻]   │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐                │
+│  │  Alerts  │ │ Silences │ │  Status  │                │
+│  └──────────┘ └──────────┘ └──────────┘                │
+│                                                         │
+│  ALERTS TAB:                                            │
+│  🔴 [critical] KubePodCrashLooping                      │
+│     instance=pod-abc, namespace=production               │
+│     Started: 2h ago  │  [Silence]  [Info]               │
+│                                                         │
+│  SILENCES TAB:                                          │
+│  🔕 Silenced: alertname=KubeNodeNotReady                │
+│     By: admin │ Until: 2026-02-20 │ [Expire]            │
+│  [+ New Silence]                                        │
+│                                                         │
+│  STATUS TAB:                                            │
+│  Cluster: 3 peers │ Mesh status: Ready                  │
+│  Uptime: 14d │ Version: 0.27.0                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Features:**
+
+- View firing alerts grouped by alertname
+- Create/edit/delete silences (with matcher builder)
+- View Alertmanager cluster status
+- Silence dialog: matcher builder (alertname =~ “…”), duration, comment
+
+### 6.5 TSDB Status Page (`/ui/prometheus/tsdb`)
+
+**API:**
+
+```
+GET /api/v1/status/tsdb        — TSDB stats
+GET /api/v1/status/runtimeinfo — runtime info
+GET /api/v1/status/buildinfo   — build/version info
+GET /api/v1/status/flags       — command-line flags
+```
+
+**UI Layout:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  TSDB Status & Health                             [↻]   │
+│                                                         │
+│  BUILD INFO                                             │
+│  Version: 3.1.0  │  Go: 1.23  │  Uptime: 14d 3h       │
+│                                                         │
+│  TSDB STATISTICS                                        │
+│  Head Series:      1,234,567                            │
+│  Head Chunks:      3,456,789                            │
+│  Head Min Time:    2026-02-12T00:00:00Z                 │
+│  Head Max Time:    2026-02-19T10:00:00Z                 │
+│  Num Series:       2,345,678                            │
+│                                                         │
+│  TOP 10 — HIGHEST CARDINALITY METRICS                   │
+│  ┌──────────────────────────────────┬──────────┐        │
+│  │ Metric Name                      │ Series   │        │
+│  ├──────────────────────────────────┼──────────┤        │
+│  │ container_cpu_usage_seconds_total│ 45,231   │        │
+│  │ http_requests_total              │ 23,112   │        │
+│  └──────────────────────────────────┴──────────┘        │
+│                                                         │
+│  TOP 10 — HIGHEST CARDINALITY LABEL PAIRS               │
+│  ┌──────────────────────────────────┬──────────┐        │
+│  │ Label Pair                       │ Series   │        │
+│  ├──────────────────────────────────┼──────────┤        │
+│  │ instance="pod-xyz-123"           │ 12,345   │        │
+│  └──────────────────────────────────┴──────────┘        │
+│                                                         │
+│  RUNTIME FLAGS                                          │
+│  storage.tsdb.retention.time = 15d                      │
+│  storage.tsdb.path = /prometheus/data                   │
+│  web.enable-lifecycle = true                            │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Features:**
+
+- Build info with version
+- TSDB head block stats
+- Top cardinality metrics (from TSDB stats)
+- Top cardinality label pairs
+- Runtime flags display
+- WAL stats if available
+
+### 6.6 Metric Metadata Explorer (`/ui/prometheus/metrics`)
+
+**API:**
+
+```
+GET /api/v1/metadata            — all metric metadata
+GET /api/v1/label/__name__/values — all metric names
+GET /api/v1/labels              — all label names
+GET /api/v1/status/tsdb         — cardinality info
+```
+
+**UI Layout:**
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Metric Explorer                                        │
+│  🔍 [Search metrics...                            ]     │
+│  Filter: [All / Counter / Gauge / Histogram / Summary]  │
+│                                                         │
+│  ┌─────────────────────────────────────────────────┐    │
+│  │ 📊 http_requests_total                          │    │
+│  │    Type: counter                                │    │
+│  │    Help: Total number of HTTP requests          │    │
+│  │    Series count: 1,234                          │    │
+│  │    Labels: method, status, handler, instance    │    │
+│  │    [Query ▶] [Explore Labels]                   │    │
+│  ├─────────────────────────────────────────────────┤    │
+│  │ 📊 node_cpu_seconds_total                       │    │
+│  │    Type: counter                                │    │
+│  │    Help: Seconds the CPUs spent in each mode    │    │
+│  │    Series count: 456                            │    │
+│  │    Labels: cpu, mode, instance                  │    │
+│  │    [Query ▶] [Explore Labels]                   │    │
+│  └─────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Features:**
+
+- List all metrics with TYPE and HELP from metadata API
+- Search/filter by name, type
+- Show estimated series count per metric
+- “Query” button → opens metric in Query Explorer
+- “Explore Labels” → drills into label names/values for that metric
+
+### 6.7 Config Page (`/ui/prometheus/config`)
+
+**API:** `GET /api/v1/status/config`
+
+**Features:**
+
+- Display the running `prometheus.yml` config with YAML syntax highlighting
+- Read-only (display only, no editing)
+- Collapsible sections for large configs
+- Search within config
+
+### 6.8 Service Discovery Page (`/ui/prometheus/service-discovery`)
+
+**API:** `GET /api/v1/targets?state=any` (includes discovered labels)
+
+**Features:**
+
+- Show discovered targets BEFORE relabeling
+- Show target labels AFTER relabeling
+- Show dropped targets (targets that were relabeled away)
+- Helps debug why a target isn’t being scraped
 
 -----
 
-## Part 5: Build System
+## 7. SHARED COMPONENTS
 
-### 5.1 Makefile Updates
+These components should be extracted from the existing InfluxDB UI and made reusable:
 
-Add UI build targets to the Makefile:
+### 7.1 Chart Component
 
-```makefile
-# UI build
-.PHONY: ui ui-install ui-clean
+- Line chart for time-series data
+- Handles both InfluxDB result format and Prometheus result format
+- Normalize to common format: `{ series: [{ name, tags, values: [{time, value}] }] }`
+- Support for: zoom, pan, legend toggle, download as PNG
 
-UI_DIR = ui
+### 7.2 Data Table Component
 
-ui-install:
-	cd $(UI_DIR) && npm install
+- Sortable columns
+- Copy cell / copy row
+- Export to CSV
+- Handles both InfluxDB tabular results and Prometheus vector/matrix results
 
-ui: ui-install
-	cd $(UI_DIR) && npm run build
+### 7.3 Code Editor Component
 
-ui-clean:
-	rm -rf $(UI_DIR)/dist $(UI_DIR)/node_modules
+- Based on CodeMirror or Monaco
+- Language modes: InfluxQL, PromQL, YAML, JSON
+- Syntax highlighting, autocomplete
+- Shared wrapper, backend-specific language config
 
-# Main build (now depends on UI)
-build: ui
-	go build $(LDFLAGS) -o bin/tided ./cmd/tided
-	go build $(LDFLAGS) -o bin/tide ./cmd/tide
-	go build $(LDFLAGS) -o bin/tide_inspect ./cmd/tide_inspect
+### 7.4 Connection Manager
 
-# Dev build without UI (for backend-only changes)
-build-server:
-	go build $(LDFLAGS) -o bin/tided ./cmd/tided
+- Sidebar connection list with type icons
+- Add/edit/delete connections
+- Test connection
+- Store in localStorage
+- Merge with CLI-provided connections
 
-# Full clean
-clean: ui-clean
-	rm -rf bin/
+### 7.5 JSON Viewer
 
-# Docker build
-docker:
-	docker build -t tidedb:$(VERSION) .
+- Collapsible tree view for raw API responses
+- Syntax highlighted
+- Copy button
 
-# Run tests
-test:
-	go test ./...
+-----
 
-# Development mode: run UI dev server + Go server concurrently
-dev:
-	@echo "Starting TideDB server on :8086..."
-	@go run ./cmd/tided run &
-	@echo "Starting UI dev server on :5173..."
-	@cd $(UI_DIR) && npm run dev
+## 8. PROMETHEUS API REFERENCE (For Implementation)
+
+All endpoints relative to Prometheus base URL (e.g., `http://localhost:9090`)
+
+### Query APIs
+
+|Method  |Path                         |Description                                                    |
+|--------|-----------------------------|---------------------------------------------------------------|
+|GET/POST|`/api/v1/query`              |Instant query. Params: `query`, `time`, `timeout`              |
+|GET/POST|`/api/v1/query_range`        |Range query. Params: `query`, `start`, `end`, `step`, `timeout`|
+|GET     |`/api/v1/series`             |Find series. Params: `match[]`, `start`, `end`                 |
+|GET     |`/api/v1/labels`             |All label names. Params: `start`, `end`, `match[]`             |
+|GET     |`/api/v1/label/<name>/values`|Values for a label. Params: `start`, `end`, `match[]`          |
+|GET     |`/api/v1/metadata`           |Metric metadata. Params: `metric`, `limit`                     |
+
+### Status APIs
+
+|Method|Path                        |Description                         |
+|------|----------------------------|------------------------------------|
+|GET   |`/api/v1/status/config`     |Running YAML config                 |
+|GET   |`/api/v1/status/flags`      |Command-line flags                  |
+|GET   |`/api/v1/status/runtimeinfo`|Runtime info (uptime, storage, etc.)|
+|GET   |`/api/v1/status/buildinfo`  |Version, Go version, etc.           |
+|GET   |`/api/v1/status/tsdb`       |TSDB stats, cardinality             |
+|GET   |`/api/v1/status/walreplay`  |WAL replay status                   |
+
+### Target APIs
+
+|Method|Path                      |Description                                               |
+|------|--------------------------|----------------------------------------------------------|
+|GET   |`/api/v1/targets`         |All scrape targets. Params: `state` (active/dropped/any)  |
+|GET   |`/api/v1/targets/metadata`|Target metadata. Params: `match_target`, `metric`, `limit`|
+
+### Alert APIs
+
+|Method|Path            |Description                                                    |
+|------|----------------|---------------------------------------------------------------|
+|GET   |`/api/v1/rules` |All rules (alerting + recording). Params: `type` (alert/record)|
+|GET   |`/api/v1/alerts`|Active alerts only                                             |
+
+### Admin APIs (require `--web.enable-admin-api`)
+
+|Method|Path                                 |Description         |
+|------|-------------------------------------|--------------------|
+|POST  |`/api/v1/admin/tsdb/snapshot`        |Create TSDB snapshot|
+|POST  |`/api/v1/admin/tsdb/delete_series`   |Delete time series  |
+|POST  |`/api/v1/admin/tsdb/clean_tombstones`|Clean tombstones    |
+
+### Lifecycle APIs (require `--web.enable-lifecycle`)
+
+|Method|Path       |Description      |
+|------|-----------|-----------------|
+|POST  |`/-/reload`|Reload config    |
+|POST  |`/-/quit`  |Graceful shutdown|
+
+### Alertmanager v2 APIs (separate URL, default port 9093)
+
+|Method|Path                   |Description        |
+|------|-----------------------|-------------------|
+|GET   |`/api/v2/alerts`       |All alerts         |
+|GET   |`/api/v2/alerts/groups`|Alert groups       |
+|GET   |`/api/v2/silences`     |All silences       |
+|POST  |`/api/v2/silences`     |Create silence     |
+|DELETE|`/api/v2/silence/<id>` |Delete silence     |
+|GET   |`/api/v2/status`       |Alertmanager status|
+|GET   |`/api/v2/receivers`    |All receivers      |
+
+-----
+
+## 9. PROMETHEUS RESPONSE FORMATS
+
+### Instant Query Response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "resultType": "vector",
+    "result": [
+      {
+        "metric": { "__name__": "up", "job": "node", "instance": "localhost:9100" },
+        "value": [1708300000, "1"]
+      }
+    ]
+  }
+}
 ```
 
-### 5.2 Dockerfile
+### Range Query Response
 
-```dockerfile
-# Stage 1: Build UI
-FROM node:20-alpine AS ui-builder
-WORKDIR /ui
-COPY ui/package*.json ./
-RUN npm ci
-COPY ui/ .
-RUN npm run build
-
-# Stage 2: Build Go binary
-FROM golang:1.23-alpine AS go-builder
-RUN apk add --no-cache git gcc musl-dev
-WORKDIR /src
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-COPY --from=ui-builder /ui/dist ./ui/dist
-RUN go build -o /tided ./cmd/tided
-RUN go build -o /tide ./cmd/tide
-
-# Stage 3: Runtime
-FROM alpine:3.19
-RUN apk add --no-cache ca-certificates tzdata
-COPY --from=go-builder /tided /usr/bin/tided
-COPY --from=go-builder /tide /usr/bin/tide
-EXPOSE 8086
-VOLUME /var/lib/tidedb
-ENTRYPOINT ["tided"]
-CMD ["run"]
+```json
+{
+  "status": "success",
+  "data": {
+    "resultType": "matrix",
+    "result": [
+      {
+        "metric": { "__name__": "up", "job": "node", "instance": "localhost:9100" },
+        "values": [
+          [1708300000, "1"],
+          [1708300015, "1"],
+          [1708300030, "1"]
+        ]
+      }
+    ]
+  }
+}
 ```
 
-### 5.3 GitHub Actions CI
+### Targets Response
 
-`.github/workflows/ci.yml`:
+```json
+{
+  "status": "success",
+  "data": {
+    "activeTargets": [
+      {
+        "discoveredLabels": { "__address__": "localhost:9100", "__scheme__": "http" },
+        "labels": { "instance": "localhost:9100", "job": "node" },
+        "scrapePool": "node",
+        "scrapeUrl": "http://localhost:9100/metrics",
+        "globalUrl": "http://localhost:9100/metrics",
+        "lastError": "",
+        "lastScrape": "2026-02-19T10:00:00.000Z",
+        "lastScrapeDuration": 0.015,
+        "health": "up",
+        "scrapeInterval": "15s",
+        "scrapeTimeout": "10s"
+      }
+    ],
+    "droppedTargets": []
+  }
+}
+```
 
-```yaml
-name: CI
+### Rules Response
 
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-jobs:
-  build-and-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: ui/package-lock.json
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.23'
-
-      - name: Build UI
-        run: |
-          cd ui
-          npm ci
-          npm run build
-
-      - name: Build Server
-        run: go build ./cmd/tided
-
-      - name: Run Go Tests
-        run: go test ./...
-
-      - name: Verify UI is embedded
-        run: |
-          ./tided run &
-          sleep 3
-          curl -sf http://localhost:8086/ui/ | grep -q "TideDB" || (echo "UI not serving" && exit 1)
-          curl -sf http://localhost:8086/ping
-          kill %1
+```json
+{
+  "status": "success",
+  "data": {
+    "groups": [
+      {
+        "name": "example",
+        "file": "/etc/prometheus/rules.yml",
+        "rules": [
+          {
+            "state": "firing",
+            "name": "HighRequestLatency",
+            "query": "job:request_latency_seconds:mean5m{job=\"myjob\"} > 0.5",
+            "duration": 600,
+            "labels": { "severity": "page" },
+            "annotations": { "summary": "High request latency" },
+            "alerts": [
+              {
+                "labels": { "alertname": "HighRequestLatency", "instance": "pod-1" },
+                "annotations": { "summary": "..." },
+                "state": "firing",
+                "activeAt": "2026-02-19T08:30:00.000Z",
+                "value": "0.823"
+              }
+            ],
+            "health": "ok",
+            "type": "alerting"
+          }
+        ]
+      }
+    ]
+  }
+}
 ```
 
 -----
 
-## Part 6: UI Design Specifications
+## 10. IMPLEMENTATION ORDER
 
-### 6.1 Color Palette
+### Phase 1: Foundation (Do First)
 
-Use a dark theme consistent with observability tools:
+1. Refactor `main.go` — add generic proxy handler, new CLI flags
+1. Refactor connection model — add `type` field, update localStorage schema
+1. Refactor sidebar — dynamic menu based on connection type
+1. Refactor React router — add `/ui/prometheus/` routes
+1. Add Connection dialog — type selector (InfluxDB / Prometheus), test connection
+1. Move existing InfluxDB pages under `/ui/influxdb/` prefix
 
-```
-Background (body):     #030712  (gray-950)
-Background (sidebar):  #111827  (gray-900)
-Background (cards):    #1f2937  (gray-800)
-Background (inputs):   #374151  (gray-700)
-Border:                #4b5563  (gray-600)
-Text (primary):        #f9fafb  (gray-50)
-Text (secondary):      #9ca3af  (gray-400)
-Text (muted):          #6b7280  (gray-500)
-Accent (primary):      #3b82f6  (blue-500)
-Accent (hover):        #2563eb  (blue-600)
-Success:               #22c55e  (green-500)
-Warning:               #f59e0b  (amber-500)
-Error:                 #ef4444  (red-500)
-Chart line colors:     #3b82f6, #8b5cf6, #ec4899, #f59e0b, #22c55e, #06b6d4
-```
+### Phase 2: Core Prometheus Pages
 
-### 6.2 Typography
+1. Prometheus Query Explorer (query + query_range + chart + table)
+1. Targets page (targets API + status display)
+1. TSDB Status page (tsdb + runtimeinfo + buildinfo + flags)
+1. Metric Metadata Explorer (metadata + labels)
 
-- Font: system font stack (`-apple-system, BlinkMacSystemFont, 'Segoe UI', ...`) via Tailwind defaults
-- Monospace (for queries, line protocol): `'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace`
-- Use `font-mono` Tailwind class for all code/query text
+### Phase 3: Alerting
 
-### 6.3 Component Styling Guidelines
+1. Alert Rules page (rules API)
+1. Alertmanager page (v2 API — alerts, silences, status)
+1. Config page (read-only YAML display)
+1. Service Discovery page (targets with discovered labels)
 
-- Cards: `bg-gray-800 rounded-lg border border-gray-700 p-4`
-- Buttons primary: `bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium`
-- Buttons danger: `bg-red-600 hover:bg-red-700 text-white ...`
-- Buttons secondary: `bg-gray-700 hover:bg-gray-600 text-gray-200 ...`
-- Inputs: `bg-gray-700 border border-gray-600 text-gray-100 rounded-md px-3 py-2 focus:border-blue-500 focus:ring-1 focus:ring-blue-500`
-- Dropdowns: same as inputs with a chevron icon
-- Tables: `border-collapse` with `border-b border-gray-700` between rows, `bg-gray-800` header row
-- No shadows on cards (flat design)
-- Subtle transitions: `transition-colors duration-150`
+### Phase 4: Polish
 
-### 6.4 Responsive Behavior
-
-- Minimum supported width: 1024px (this is a database admin tool, not a mobile app)
-- Sidebar collapses to icons only below 1280px
-- Schema explorer panel can be toggled on/off with a button
-- Results panel is resizable (drag handle between editor and results)
+1. PromQL autocomplete and syntax highlighting
+1. Shared chart component normalization
+1. Query history per connection
+1. Auto-refresh on applicable pages
+1. Dark/light theme toggle
+1. Export query results (CSV, JSON)
+1. –connections file support
+1. –readonly / –disable-write / –disable-admin support
+1. Update README.md with all new features and CLI docs
 
 -----
 
-## Part 7: Development Workflow
+## 11. BUILD & RELEASE
 
-### 7.1 First-Time Setup
+### Build Commands
 
 ```bash
-# Clone your fork
-git clone git@github.com:<your-username>/tidedb.git
-cd tidedb
+# Build UI
+cd ui && npm install && npm run build && cd ..
 
-# Install Go dependencies
-go mod download
+# Build binary (embeds UI)
+go build -o timeseriesui .
 
-# Install UI dependencies
-cd ui && npm install && cd ..
-
-# Build everything
-make build
-
-# Run
-./bin/tided run
-# Open http://localhost:8086/ui/
+# Cross-compile for multiple platforms
+GOOS=linux   GOARCH=amd64 go build -o timeseriesui-linux-amd64 .
+GOOS=darwin  GOARCH=amd64 go build -o timeseriesui-darwin-amd64 .
+GOOS=darwin  GOARCH=arm64 go build -o timeseriesui-darwin-arm64 .
+GOOS=windows GOARCH=amd64 go build -o timeseriesui-windows-amd64.exe .
 ```
-
-### 7.2 UI Development Mode
-
-For fast UI iteration with hot-reload:
-
-```bash
-# Terminal 1: Run the Go server
-go run ./cmd/tided run
-
-# Terminal 2: Run Vite dev server with proxy to Go server
-cd ui && npm run dev
-# Open http://localhost:5173/ui/
-```
-
-Vite proxies API requests (`/query`, `/write`, `/ping`, `/debug`) to `localhost:8086`, so the UI works against the real server.
-
-### 7.3 Testing the Embedded Build
-
-```bash
-# Build with UI embedded
-make build
-
-# Start server
-./bin/tided run
-
-# Verify UI is served from the binary
-curl -s http://localhost:8086/ui/ | head -5
-# Should contain HTML with "TideDB" in the title
-
-# Verify API still works
-curl -s 'http://localhost:8086/query?q=SHOW+DATABASES' | python3 -m json.tool
-```
-
------
-
-## Part 8: README.md
-
-Create a README that positions TideDB clearly:
-
-```markdown
-# TideDB
-
-A community fork of [InfluxDB OSS v1.12.2](https://github.com/influxdata/influxdb)
-with an embedded web UI, resumable downsampling, and horizontal scaling.
-
-> **TideDB is NOT affiliated with, endorsed by, or supported by InfluxData, Inc.**
-> See [FORK_NOTICE.md](./FORK_NOTICE.md) for details.
-
-## Why TideDB?
-
-InfluxDB 1.x is one of the most widely deployed time-series databases in the world.
-But it was abandoned in favor of a complete rewrite (2.x, then 3.x), leaving millions
-of deployments without a path forward.
-
-TideDB continues where InfluxDB 1.x left off:
-
-- **Built-in Web UI** — No separate Chronograf needed. Query, manage, and monitor
-  your database from a browser.
-- **Resumable Downsampling** *(coming soon)* — Declarative, cursor-based downsampling
-  with backfill support and late-arrival handling.
-- **Horizontal Scaling** *(planned)* — Native clustering in the open-source version.
-
-## Quick Start
-
-### Binary
-
-Download the latest release and run:
-\`\`\`bash
-./tided run
-# API: http://localhost:8086
-# UI:  http://localhost:8086/ui/
-\`\`\`
 
 ### Docker
 
-\`\`\`bash
-docker run -p 8086:8086 tidedb/tidedb:latest
-\`\`\`
+```dockerfile
+FROM scratch
+COPY timeseriesui-linux-amd64 /timeseriesui
+EXPOSE 8080
+ENTRYPOINT ["/timeseriesui"]
+```
 
-## Compatibility
-
-TideDB is fully compatible with:
-- InfluxDB 1.x line protocol
-- InfluxQL
-- Telegraf
-- Grafana InfluxDB data source
-- All existing InfluxDB 1.x client libraries
-
-## License
-
-TideDB is licensed under the Apache License 2.0. See [LICENSE](./LICENSE) for details.
-
-Original InfluxDB code is copyright InfluxData, Inc. and licensed under MIT/Apache 2.0.
+```bash
+docker run -p 8080:8080 tidedb/timeseriesui \
+  --prometheus-url http://prometheus:9090 \
+  --influxdb-url http://influxdb:8086
 ```
 
 -----
 
-## Execution Order for Claude Code
+## 12. FUTURE BACKENDS (Planned, Not In Scope Now)
 
-When giving this to Claude Code, execute in this order:
+For future reference, the same pattern extends to:
 
-1. **Fork and clone** the repository (Section 1.1)
-1. **Add license/notice files** (Section 1.2)
-1. **Rename Go module** (Section 1.3)
-1. **Rename binaries** (Section 1.4)
-1. **Add branding package** (Section 1.5)
-1. **Verify build** (Section 1.6)
-1. **Create UI project** with Vite + React + TypeScript (Section 3.1-3.2)
-1. **Implement API client** (Section 3.5)
-1. **Implement Layout component** (Section 3.7)
-1. **Implement Query Explorer** (Section 3.8) — this is the most complex page
-1. **Implement Database Admin** (Section 3.9)
-1. **Implement Write Data** (Section 3.10)
-1. **Implement System Health** (Section 3.11)
-1. **Add Go embed directive** (Section 2.3)
-1. **Register UI routes in Go server** (Section 4.1-4.3)
-1. **Update Makefile** (Section 5.1)
-1. **Add Dockerfile** (Section 5.2)
-1. **Add CI** (Section 5.3)
-1. **Write README** (Section 8)
-1. **Test the full build end-to-end** (Section 7.3)
+|Backend        |API Base                        |Query Language    |
+|---------------|--------------------------------|------------------|
+|VictoriaMetrics|Same as Prometheus API          |PromQL + MetricsQL|
+|Thanos         |Same as Prometheus API (Querier)|PromQL            |
+|Mimir          |Same as Prometheus API          |PromQL            |
+|Graphite       |`/render`, `/metrics/find`      |Graphite functions|
+|InfluxDB 2.x   |`/api/v2/query`                 |Flux              |
+|QuestDB        |`/exec`                         |SQL               |
+
+VictoriaMetrics and Thanos would essentially work as “Prometheus” connections with no code changes (since they speak the same API). Just add them as Prometheus connections.
 
 -----
 
-## Notes for Claude Code
+## 13. TESTING NOTES
 
-- The InfluxDB 1.x codebase is in **Go**. The UI is in **React + TypeScript**.
-- The Go codebase uses **Go 1.23** (as of v1.12.2).
-- All UI API calls go through the existing InfluxDB HTTP API — no new Go endpoints needed for the UI.
-- The query API endpoint is `POST /query?q=<InfluxQL>&db=<database>` — it returns JSON.
-- The write API endpoint is `POST /write?db=<database>&precision=<precision>` — body is line protocol.
-- The `/ping` endpoint returns server version in headers.
-- The `/debug/vars` endpoint returns Go runtime and engine statistics as JSON.
-- Do NOT modify any existing InfluxDB query engine, storage engine, or protocol handling code for this phase.
-- The UI is strictly a **consumer of existing APIs**.
-- Keep the UI bundle size small — do not add heavy dependencies. Target < 500KB gzipped for the initial load.
+### For Development
+
+```bash
+# Run a local Prometheus for testing
+docker run -p 9090:9090 prom/prometheus
+
+# Run a local Alertmanager for testing
+docker run -p 9093:9093 prom/alertmanager
+
+# Run a local InfluxDB 1.x for testing
+docker run -p 8086:8086 influxdb:1.12
+
+# Run TimeseriesUI connecting to all
+./timeseriesui \
+  --influxdb-url http://localhost:8086 \
+  --prometheus-url http://localhost:9090 \
+  --alertmanager-url http://localhost:9093
+```
+
+### Test Connection Endpoints
+
+- InfluxDB: `GET http://localhost:8086/ping` → 204
+- Prometheus: `GET http://localhost:9090/api/v1/status/buildinfo` → JSON
+- Alertmanager: `GET http://localhost:9093/api/v2/status` → JSON
