@@ -1,8 +1,8 @@
 // TimeseriesUI is a unified web UI for time-series databases.
 //
 // It serves the TimeseriesUI web interface and proxies API requests to
-// InfluxDB, Prometheus, and Alertmanager backends. Connections are managed
-// in the browser UI; the binary itself is stateless.
+// InfluxDB, Prometheus, VictoriaMetrics, and Alertmanager backends.
+// Connections are managed in the browser UI; the binary itself is stateless.
 //
 // Usage:
 //
@@ -10,10 +10,10 @@
 //	timeseriesui --port 3000
 //	timeseriesui --influxdb-url http://myinflux:8086
 //	timeseriesui --prometheus-url http://myprom:9090
+//	timeseriesui --vm-url http://myvm:8428
 package main
 
 import (
-	"bytes"
 	"embed"
 	"encoding/json"
 	"flag"
@@ -50,7 +50,7 @@ func (s *stringSlice) Set(v string) error {
 
 type CLIConnection struct {
 	Name                 string `json:"name"`
-	Type                 string `json:"type"` // "influxdb" or "prometheus"
+	Type                 string `json:"type"` // "influxdb", "prometheus", or "victoriametrics"
 	URL                  string `json:"url"`
 	Username             string `json:"username,omitempty"`
 	Password             string `json:"password,omitempty"`
@@ -58,6 +58,10 @@ type CLIConnection struct {
 	AlertmanagerURL      string `json:"alertmanagerUrl,omitempty"`
 	AlertmanagerUsername string `json:"alertmanagerUsername,omitempty"`
 	AlertmanagerPassword string `json:"alertmanagerPassword,omitempty"`
+	ProxyURL             string `json:"proxyUrl,omitempty"`
+	ClusterMode          bool   `json:"clusterMode,omitempty"`
+	TenantID             string `json:"tenantId,omitempty"`
+	VminsertURL          string `json:"vminsertUrl,omitempty"`
 	Source               string `json:"source"` // always "cli"
 }
 
@@ -139,14 +143,11 @@ func main() {
 		})
 	})
 
-	// ── Generic proxy: /proxy/influxdb/ ─────────────────────────────────
+	// ── Generic proxies ─────────────────────────────────────────────────
 	mux.HandleFunc(basePath+"/proxy/influxdb/", makeGenericProxy(httpClient))
-
-	// ── Generic proxy: /proxy/prometheus/ ───────────────────────────────
 	mux.HandleFunc(basePath+"/proxy/prometheus/", makeGenericProxy(httpClient))
-
-	// ── Generic proxy: /proxy/alertmanager/ ─────────────────────────────
 	mux.HandleFunc(basePath+"/proxy/alertmanager/", makeGenericProxy(httpClient))
+	mux.HandleFunc(basePath+"/proxy/victoriametrics/", makeGenericProxy(httpClient))
 
 	// ── Legacy InfluxDB proxy (backward compatibility) ──────────────────
 	defaultInfluxURL := ""
@@ -161,9 +162,10 @@ func main() {
 	}
 
 	// ── Serve the embedded SPA ──────────────────────────────────────────
+	processedIndex := processIndexHTML(uiFS, basePath)
 	uiPrefix := basePath + "/ui/"
 	mux.HandleFunc(uiPrefix, func(w http.ResponseWriter, r *http.Request) {
-		serveUI(w, r, uiFS, uiPrefix)
+		serveUI(w, r, uiFS, uiPrefix, processedIndex)
 	})
 	mux.HandleFunc(basePath+"/ui", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, uiPrefix, http.StatusMovedPermanently)
@@ -212,6 +214,7 @@ func parseFlags() Config {
 	var (
 		influxURLs   stringSlice
 		promURLs     stringSlice
+		vmURLs       stringSlice
 		cfg          Config
 		proxyTimeout string
 		amURL        string
@@ -221,6 +224,10 @@ func parseFlags() Config {
 		promUser     string
 		promPass     string
 		promName     string
+		vmUser       string
+		vmPass       string
+		vmName       string
+		vmTenant     string
 	)
 
 	flag.IntVar(&cfg.Port, "port", 8080, "Port to listen on")
@@ -239,6 +246,12 @@ func parseFlags() Config {
 	flag.StringVar(&promPass, "prometheus-password", "", "Default Prometheus basic-auth password")
 	flag.StringVar(&promName, "prometheus-name", "", "Display name for Prometheus connection")
 	flag.StringVar(&amURL, "alertmanager-url", "", "Default Alertmanager URL")
+
+	flag.Var(&vmURLs, "vm-url", "Add a default VictoriaMetrics connection (repeatable)")
+	flag.StringVar(&vmUser, "vm-user", "", "Default VictoriaMetrics basic-auth username")
+	flag.StringVar(&vmPass, "vm-password", "", "Default VictoriaMetrics basic-auth password")
+	flag.StringVar(&vmName, "vm-name", "", "Display name for VictoriaMetrics connection")
+	flag.StringVar(&vmTenant, "vm-tenant", "", "Tenant ID for VictoriaMetrics cluster mode (e.g. 0 or 0:0)")
 
 	flag.StringVar(&cfg.ConnectionsFile, "connections", "", "Path to a JSON connections file")
 	flag.StringVar(&cfg.LogLevel, "log-level", "info", "Log verbosity: debug, info, warn, error")
@@ -320,8 +333,36 @@ func parseFlags() Config {
 		cfg.Connections = append(cfg.Connections, conn)
 	}
 
-	if amURL != "" && len(promURLs) == 0 {
-		log.Println("Warning: --alertmanager-url specified without --prometheus-url; it won't be used.")
+	for i, u := range vmURLs {
+		name := vmName
+		if name == "" {
+			name = nameFromURL(u, "VictoriaMetrics")
+			if len(vmURLs) > 1 {
+				name += " " + strconv.Itoa(i+1)
+			}
+		} else if len(vmURLs) > 1 {
+			name += " " + strconv.Itoa(i+1)
+		}
+		conn := CLIConnection{
+			Name:     name,
+			Type:     "victoriametrics",
+			URL:      u,
+			Username: vmUser,
+			Password: vmPass,
+			Source:   "cli",
+		}
+		if vmTenant != "" {
+			conn.ClusterMode = true
+			conn.TenantID = vmTenant
+		}
+		if amURL != "" && len(promURLs) == 0 && i == 0 {
+			conn.AlertmanagerURL = amURL
+		}
+		cfg.Connections = append(cfg.Connections, conn)
+	}
+
+	if amURL != "" && len(promURLs) == 0 && len(vmURLs) == 0 {
+		log.Println("Warning: --alertmanager-url specified without --prometheus-url or --vm-url; it won't be used.")
 	}
 
 	return cfg
@@ -493,10 +534,43 @@ func makeLegacyInfluxProxy(httpClient *http.Client, defaultURL string) http.Hand
 
 // ── SPA Serving ─────────────────────────────────────────────────────────────
 
-func serveUI(w http.ResponseWriter, r *http.Request, uiFS fs.FS, prefix string) {
+// processIndexHTML reads the embedded index.html and injects the runtime base
+// path. When --base-path is set, asset URLs ("/ui/…") are rewritten to include
+// the prefix so that the SPA works behind a reverse proxy at a sub-path.
+func processIndexHTML(uiFS fs.FS, basePath string) []byte {
+	f, err := uiFS.Open("index.html")
+	if err != nil {
+		// During development the embedded FS may be empty; return a placeholder.
+		return []byte("<!-- index.html not available -->")
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(f)
+	if err != nil {
+		return []byte("<!-- failed to read index.html -->")
+	}
+	html := string(raw)
+
+	// Inject the base path so the SPA can prefix API calls and router basename.
+	html = strings.Replace(html,
+		`window.__TSUI_BASE__=""`,
+		fmt.Sprintf(`window.__TSUI_BASE__="%s"`, basePath), 1)
+
+	// Rewrite Vite-generated asset paths when a base path is configured.
+	if basePath != "" {
+		html = strings.ReplaceAll(html, `="/ui/`, `="`+basePath+`/ui/`)
+		html = strings.ReplaceAll(html, `'/ui/`, `'`+basePath+`/ui/`)
+	}
+
+	return []byte(html)
+}
+
+func serveUI(w http.ResponseWriter, r *http.Request, uiFS fs.FS, prefix string, processedIndex []byte) {
 	path := strings.TrimPrefix(r.URL.Path, prefix)
-	if path == "" {
-		path = "index.html"
+	if path == "" || path == "index.html" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write(processedIndex)
+		return
 	}
 
 	f, err := uiFS.Open(path)
@@ -506,16 +580,10 @@ func serveUI(w http.ResponseWriter, r *http.Request, uiFS fs.FS, prefix string) 
 		return
 	}
 
-	indexFile, err := uiFS.Open("index.html")
-	if err != nil {
-		http.Error(w, "UI not available", http.StatusInternalServerError)
-		return
-	}
-	defer indexFile.Close()
-
-	stat, _ := indexFile.Stat()
-	content, _ := io.ReadAll(indexFile)
-	http.ServeContent(w, r, "index.html", stat.ModTime(), bytes.NewReader(content))
+	// SPA fallback — serve processed index.html for client-side routing.
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Write(processedIndex)
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────

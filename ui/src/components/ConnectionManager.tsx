@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Plus, Trash2, Check, X, Server, ChevronDown, ChevronUp, Pencil, Database, Flame } from 'lucide-react';
+import { Plus, Trash2, Check, X, Server, ChevronDown, ChevronUp, Pencil, Database, Flame, Hexagon, Globe, ChevronRight } from 'lucide-react';
 import { client, type RemoteConnection } from '../api/client';
+import { basePath } from '../config';
 
 // ── Connection type ─────────────────────────────────────────────────────────
 
-export type BackendType = 'influxdb' | 'prometheus';
+export type BackendType = 'influxdb' | 'prometheus' | 'victoriametrics';
 
 export interface SavedConnection extends RemoteConnection {
   id: string;
@@ -14,6 +15,11 @@ export interface SavedConnection extends RemoteConnection {
   alertmanagerUrl?: string;
   alertmanagerUsername?: string;
   alertmanagerPassword?: string;
+  proxyUrl?: string;
+  // VM-specific fields
+  clusterMode?: boolean;
+  tenantId?: string;
+  vminsertUrl?: string;
 }
 
 const STORAGE_KEY = 'timeseriesui_connections';
@@ -21,10 +27,8 @@ const ACTIVE_KEY = 'timeseriesui_active_connection';
 
 function loadConnections(): SavedConnection[] {
   try {
-    // Also try legacy key
     const data = localStorage.getItem(STORAGE_KEY) || localStorage.getItem('tidedb-connections');
     const conns = JSON.parse(data || '[]');
-    // Migrate: add type field if missing
     return conns.map((c: any) => ({
       ...c,
       type: c.type || 'influxdb',
@@ -72,12 +76,18 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
   const [formPass, setFormPass] = useState('');
   const [formType, setFormType] = useState<BackendType>('influxdb');
   const [formAMUrl, setFormAMUrl] = useState('');
+  const [formProxyUrl, setFormProxyUrl] = useState('');
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  // VM-specific
+  const [formClusterMode, setFormClusterMode] = useState(false);
+  const [formTenantId, setFormTenantId] = useState('');
+  const [formVminsertUrl, setFormVminsertUrl] = useState('');
 
   // Merge CLI connections on mount
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('/api/v1/connections');
+        const res = await fetch(basePath + '/api/v1/connections');
         if (res.ok) {
           const cliConns: any[] = await res.json();
           if (Array.isArray(cliConns) && cliConns.length > 0) {
@@ -96,6 +106,10 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
                   alertmanagerUrl: c.alertmanagerUrl,
                   alertmanagerUsername: c.alertmanagerUsername,
                   alertmanagerPassword: c.alertmanagerPassword,
+                  proxyUrl: c.proxyUrl,
+                  clusterMode: c.clusterMode,
+                  tenantId: c.tenantId,
+                  vminsertUrl: c.vminsertUrl,
                 }));
               if (newConns.length === 0) return prev;
               const merged = [...prev, ...newConns];
@@ -110,7 +124,6 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
     })();
   }, []);
 
-  // If there's a defaultUrl from the server and no connections saved, auto-add it.
   useEffect(() => {
     if (defaultUrl && connections.length === 0) {
       const conn: SavedConnection = {
@@ -157,6 +170,11 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
     setFormPass('');
     setFormType('influxdb');
     setFormAMUrl('');
+    setFormProxyUrl('');
+    setShowAdvanced(false);
+    setFormClusterMode(false);
+    setFormTenantId('');
+    setFormVminsertUrl('');
     setEditingId(null);
   };
 
@@ -172,6 +190,11 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
     setFormPass(conn.password);
     setFormType(conn.type);
     setFormAMUrl(conn.alertmanagerUrl || '');
+    setFormProxyUrl(conn.proxyUrl || '');
+    setFormClusterMode(conn.clusterMode || false);
+    setFormTenantId(conn.tenantId || '');
+    setFormVminsertUrl(conn.vminsertUrl || '');
+    setShowAdvanced(!!(conn.proxyUrl || conn.clusterMode));
     setEditingId(conn.id);
   };
 
@@ -180,17 +203,27 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
     const trimmedUrl = formUrl.trim();
     if (!trimmedUrl) return;
 
+    const hasAlertmanager = formType === 'prometheus' || formType === 'victoriametrics';
+
+    const connData: Partial<SavedConnection> = {
+      name: trimmedName,
+      type: formType,
+      url: trimmedUrl,
+      username: formUser,
+      password: formPass,
+      alertmanagerUrl: hasAlertmanager ? formAMUrl.trim() || undefined : undefined,
+      proxyUrl: formProxyUrl.trim() || undefined,
+      clusterMode: formType === 'victoriametrics' ? formClusterMode : undefined,
+      tenantId: formType === 'victoriametrics' && formClusterMode ? formTenantId.trim() || undefined : undefined,
+      vminsertUrl: formType === 'victoriametrics' && formClusterMode ? formVminsertUrl.trim() || undefined : undefined,
+    };
+
     if (editingId === 'new') {
       const conn: SavedConnection = {
         id: generateId(),
-        name: trimmedName,
-        type: formType,
-        url: trimmedUrl,
-        username: formUser,
-        password: formPass,
         source: 'browser',
-        alertmanagerUrl: formType === 'prometheus' ? formAMUrl.trim() || undefined : undefined,
-      };
+        ...connData,
+      } as SavedConnection;
       const updated = [...connections, conn];
       setConnections(updated);
       saveConnections(updated);
@@ -201,17 +234,7 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
       }
     } else {
       const updated = connections.map((c) =>
-        c.id === editingId
-          ? {
-              ...c,
-              name: trimmedName,
-              type: formType,
-              url: trimmedUrl,
-              username: formUser,
-              password: formPass,
-              alertmanagerUrl: formType === 'prometheus' ? formAMUrl.trim() || undefined : undefined,
-            }
-          : c,
+        c.id === editingId ? { ...c, ...connData } : c,
       );
       setConnections(updated);
       saveConnections(updated);
@@ -224,7 +247,7 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
 
   const removeConnection = (id: string) => {
     const conn = connections.find((c) => c.id === id);
-    if (conn?.source === 'cli') return; // Can't delete CLI connections
+    if (conn?.source === 'cli') return;
     const updated = connections.filter((c) => c.id !== id);
     setConnections(updated);
     saveConnections(updated);
@@ -240,9 +263,15 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
   const activeConn = connections.find((c) => c.id === activeId);
 
   const TypeIcon = ({ type }: { type: BackendType }) => {
+    if (type === 'victoriametrics') return <Hexagon size={10} className="text-emerald-400 flex-shrink-0" />;
     if (type === 'prometheus') return <Flame size={10} className="text-orange-400 flex-shrink-0" />;
     return <Database size={10} className="text-blue-400 flex-shrink-0" />;
   };
+
+  const urlPlaceholder =
+    formType === 'influxdb' ? 'URL (e.g. http://localhost:8086)' :
+    formType === 'prometheus' ? 'URL (e.g. http://localhost:9090)' :
+    'URL (e.g. http://localhost:8428)';
 
   return (
     <div>
@@ -292,18 +321,10 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
               <div className="flex items-center gap-0.5 flex-shrink-0">
                 {conn.source !== 'cli' && (
                   <>
-                    <button
-                      onClick={() => startEdit(conn)}
-                      className="p-1 text-gray-500 hover:text-gray-200 transition-colors"
-                      title="Edit"
-                    >
+                    <button onClick={() => startEdit(conn)} className="p-1 text-gray-500 hover:text-gray-200 transition-colors" title="Edit">
                       <Pencil size={10} />
                     </button>
-                    <button
-                      onClick={() => removeConnection(conn.id)}
-                      className="p-1 text-gray-500 hover:text-red-400 transition-colors"
-                      title="Remove"
-                    >
+                    <button onClick={() => removeConnection(conn.id)} className="p-1 text-gray-500 hover:text-red-400 transition-colors" title="Remove">
                       <Trash2 size={10} />
                     </button>
                   </>
@@ -338,6 +359,17 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
                   <Flame size={10} />
                   Prometheus
                 </button>
+                <button
+                  onClick={() => setFormType('victoriametrics')}
+                  className={`flex-1 flex items-center justify-center gap-1 py-1.5 rounded text-xs font-medium transition-colors ${
+                    formType === 'victoriametrics'
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-gray-800 text-gray-400 hover:text-white border border-gray-700'
+                  }`}
+                >
+                  <Hexagon size={10} />
+                  VM
+                </button>
               </div>
               <input
                 type="text"
@@ -349,7 +381,7 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
               />
               <input
                 type="text"
-                placeholder={formType === 'influxdb' ? 'URL (e.g. http://localhost:8086)' : 'URL (e.g. http://localhost:9090)'}
+                placeholder={urlPlaceholder}
                 value={formUrl}
                 onChange={(e) => setFormUrl(e.target.value)}
                 className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
@@ -368,7 +400,7 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
                 onChange={(e) => setFormPass(e.target.value)}
                 className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
               />
-              {formType === 'prometheus' && (
+              {(formType === 'prometheus' || formType === 'victoriametrics') && (
                 <input
                   type="text"
                   placeholder="Alertmanager URL (optional)"
@@ -377,6 +409,66 @@ export default function ConnectionManager({ onConnectionChange, defaultUrl }: Co
                   className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-orange-500 transition-colors"
                 />
               )}
+
+              {/* Advanced Options Toggle */}
+              <button
+                onClick={() => setShowAdvanced((s) => !s)}
+                className="flex items-center gap-1 text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                <ChevronRight size={10} className={`transition-transform ${showAdvanced ? 'rotate-90' : ''}`} />
+                Advanced Options
+              </button>
+
+              {showAdvanced && (
+                <div className="space-y-1.5 pl-2 border-l-2 border-gray-800">
+                  {/* Proxy URL */}
+                  <div className="flex items-center gap-1.5">
+                    <Globe size={10} className="text-gray-500 flex-shrink-0" />
+                    <input
+                      type="text"
+                      placeholder="HTTP Proxy URL (e.g. http://proxy:8080)"
+                      value={formProxyUrl}
+                      onChange={(e) => setFormProxyUrl(e.target.value)}
+                      className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-purple-500 transition-colors"
+                    />
+                  </div>
+                  <p className="text-[10px] text-gray-600 pl-4">Route connections through a corporate or SOCKS proxy</p>
+
+                  {/* VM Cluster Mode */}
+                  {formType === 'victoriametrics' && (
+                    <>
+                      <label className="flex items-center gap-2 text-xs text-gray-400 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={formClusterMode}
+                          onChange={(e) => setFormClusterMode(e.target.checked)}
+                          className="rounded bg-gray-800 border-gray-600 text-emerald-500 focus:ring-emerald-500"
+                        />
+                        Cluster Mode
+                      </label>
+                      {formClusterMode && (
+                        <>
+                          <input
+                            type="text"
+                            placeholder="Tenant ID (e.g. 0 or 0:0)"
+                            value={formTenantId}
+                            onChange={(e) => setFormTenantId(e.target.value)}
+                            className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                          />
+                          <input
+                            type="text"
+                            placeholder="vminsert URL (e.g. http://vminsert:8480)"
+                            value={formVminsertUrl}
+                            onChange={(e) => setFormVminsertUrl(e.target.value)}
+                            className="w-full px-2 py-1.5 rounded bg-gray-800 border border-gray-700 text-gray-200 text-xs placeholder-gray-500 focus:outline-none focus:border-emerald-500 transition-colors"
+                          />
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+
               <div className="flex gap-1.5">
                 <button
                   onClick={saveForm}

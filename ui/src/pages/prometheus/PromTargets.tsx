@@ -22,7 +22,7 @@ export default function PromTargets() {
   const [autoRefresh, setAutoRefresh] = useState(0);
 
   const fetchTargets = useCallback(async () => {
-    if (!connection || connection.type !== 'prometheus') return;
+    if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) return;
     setLoading(true);
     setError(null);
     try {
@@ -91,7 +91,7 @@ export default function PromTargets() {
     }))
     .filter((g) => g.targets.length > 0);
 
-  if (!connection || connection.type !== 'prometheus') {
+  if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) {
     return <div className="flex items-center justify-center h-full text-gray-500"><p>Select a Prometheus connection.</p></div>;
   }
 
@@ -192,7 +192,11 @@ export default function PromTargets() {
       </div>
 
       {!loading && filteredGroups.length === 0 && !error && (
-        <div className="text-center py-12 text-gray-500 text-sm">No targets found</div>
+        <div className="text-center py-12 text-gray-500 text-sm">
+          {connection.type === 'victoriametrics'
+            ? 'No targets found. VictoriaMetrics only shows targets when configured with -promscrape.config.'
+            : 'No targets found'}
+        </div>
       )}
     </div>
   );

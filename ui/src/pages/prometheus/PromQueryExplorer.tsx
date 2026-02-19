@@ -64,7 +64,7 @@ export default function PromQueryExplorer() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (!connection || connection.type !== 'prometheus') return;
+    if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) return;
     prometheusClient.getLabelValues(connection.url, '__name__', auth)
       .then((r) => { if (r.status === 'success') setMetrics(r.data || []); })
       .catch(() => {});
@@ -149,10 +149,13 @@ export default function PromQueryExplorer() {
     ? metrics.filter((m) => m.toLowerCase().includes(metricSearch.toLowerCase())).slice(0, 50)
     : metrics.slice(0, 50);
 
-  if (!connection || connection.type !== 'prometheus') {
+  const isVm = connection?.type === 'victoriametrics';
+  const queryLanguage = isVm ? 'MetricsQL' : 'PromQL';
+
+  if (!connection || (connection.type !== 'prometheus' && connection.type !== 'victoriametrics')) {
     return (
       <div className="flex items-center justify-center h-full text-gray-500">
-        <p>Select a Prometheus connection to start querying.</p>
+        <p>Select a Prometheus or VictoriaMetrics connection to start querying.</p>
       </div>
     );
   }
@@ -206,7 +209,7 @@ export default function PromQueryExplorer() {
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={handleKeyDown}
               rows={2}
-              placeholder="Enter PromQL query... (Ctrl+Enter to execute)"
+              placeholder={`Enter ${queryLanguage} query... (Ctrl+Enter to execute)`}
               className="flex-1 px-3 py-2 rounded bg-gray-800 border border-gray-700 text-gray-100 text-sm font-mono placeholder-gray-500 focus:outline-none focus:border-blue-500 resize-none"
             />
             <button
@@ -404,7 +407,7 @@ export default function PromQueryExplorer() {
 
           {!error && !running && !rawJson && (
             <div className="flex items-center justify-center h-full text-gray-600 text-sm">
-              Enter a PromQL query and press Execute or Ctrl+Enter
+              Enter a {queryLanguage} query and press Execute or Ctrl+Enter
             </div>
           )}
         </div>

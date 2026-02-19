@@ -18,6 +18,7 @@ export default defineConfig({
       '/proxy/influxdb': 'http://localhost:8080',
       '/proxy/prometheus': 'http://localhost:8080',
       '/proxy/alertmanager': 'http://localhost:8080',
+      '/proxy/victoriametrics': 'http://localhost:8080',
       '/api/mode': 'http://localhost:8080',
       '/api/v1': 'http://localhost:8080',
     },

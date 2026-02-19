@@ -1,6 +1,8 @@
 // Prometheus API Client
 // Communicates with Prometheus via the Go proxy at /proxy/prometheus/
 
+import { basePath } from '../config';
+
 export interface PrometheusResponse<T = any> {
   status: 'success' | 'error';
   data: T;
@@ -133,8 +135,8 @@ export interface AlertmanagerSilence {
 }
 
 class PrometheusClient {
-  private proxyBase = '/proxy/prometheus/';
-  private amProxyBase = '/proxy/alertmanager/';
+  private proxyBase = basePath + '/proxy/prometheus/';
+  private amProxyBase = basePath + '/proxy/alertmanager/';
 
   private buildURL(
     targetUrl: string,

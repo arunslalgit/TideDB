@@ -3,9 +3,11 @@ import { NavLink, useNavigate, useLocation } from 'react-router-dom';
 import {
   Terminal, Database, PenLine, Activity, Menu, X,
   Circle, Crosshair, Bell, BellOff, HardDrive,
-  LayoutList, FileCode, Radar,
+  LayoutList, FileCode, Radar, Zap,
+  ArrowDownUp, Camera, Shield,
 } from 'lucide-react';
 import { client } from '../api/client';
+import { basePath } from '../config';
 import ConnectionManager, { type SavedConnection } from './ConnectionManager';
 
 interface LayoutProps {
@@ -16,6 +18,7 @@ interface NavItem {
   to: string;
   label: string;
   icon: React.ComponentType<{ size?: number; className?: string }>;
+  section?: string;
 }
 
 const influxNavLinks: NavItem[] = [
@@ -26,10 +29,10 @@ const influxNavLinks: NavItem[] = [
 ];
 
 const prometheusNavLinks: NavItem[] = [
-  { to: '/prometheus/query', label: 'Query Explorer', icon: Terminal },
-  { to: '/prometheus/targets', label: 'Targets', icon: Crosshair },
-  { to: '/prometheus/alerts', label: 'Alert Rules', icon: Bell },
-  { to: '/prometheus/tsdb', label: 'TSDB Status', icon: HardDrive },
+  { to: '/prometheus/query', label: 'Query Explorer', icon: Terminal, section: 'QUERY' },
+  { to: '/prometheus/targets', label: 'Targets', icon: Crosshair, section: 'MONITORING' },
+  { to: '/prometheus/alerts', label: 'Alert Rules', icon: Bell, section: 'ALERTING' },
+  { to: '/prometheus/tsdb', label: 'TSDB Status', icon: HardDrive, section: 'STATUS' },
   { to: '/prometheus/metrics', label: 'Metrics Explorer', icon: LayoutList },
   { to: '/prometheus/config', label: 'Config', icon: FileCode },
   { to: '/prometheus/service-discovery', label: 'Service Discovery', icon: Radar },
@@ -41,8 +44,31 @@ const prometheusAMLink: NavItem = {
   icon: BellOff,
 };
 
+function getVmNavLinks(conn: SavedConnection): NavItem[] {
+  const links: NavItem[] = [
+    { to: '/victoriametrics/query', label: 'Query Explorer', icon: Terminal, section: 'QUERY' },
+    { to: '/victoriametrics/metrics', label: 'Metrics Explorer', icon: LayoutList },
+    { to: '/victoriametrics/targets', label: 'Targets', icon: Crosshair, section: 'MONITORING' },
+    { to: '/victoriametrics/service-discovery', label: 'Service Discovery', icon: Radar },
+    { to: '/victoriametrics/active-queries', label: 'Active Queries', icon: Zap },
+    { to: '/victoriametrics/alerts', label: 'Alert Rules', icon: Bell, section: 'ALERTING' },
+  ];
+  if (conn.alertmanagerUrl) {
+    links.push({ to: '/victoriametrics/alertmanager', label: 'Alertmanager', icon: BellOff });
+  }
+  links.push(
+    { to: '/victoriametrics/tsdb', label: 'TSDB Status', icon: HardDrive, section: 'STORAGE' },
+    { to: '/victoriametrics/snapshots', label: 'Snapshots', icon: Camera },
+    { to: '/victoriametrics/export-import', label: 'Export / Import', icon: ArrowDownUp },
+    { to: '/victoriametrics/config', label: 'Config', icon: FileCode, section: 'ADMIN' },
+    { to: '/victoriametrics/admin', label: 'Admin Operations', icon: Shield },
+  );
+  return links;
+}
+
 function getNavLinks(conn: SavedConnection | null): NavItem[] {
   if (!conn) return [];
+  if (conn.type === 'victoriametrics') return getVmNavLinks(conn);
   if (conn.type === 'prometheus') {
     const links = [...prometheusNavLinks];
     if (conn.alertmanagerUrl) {
@@ -51,6 +77,18 @@ function getNavLinks(conn: SavedConnection | null): NavItem[] {
     return links;
   }
   return influxNavLinks;
+}
+
+function getBackendLabel(type: string): string {
+  if (type === 'victoriametrics') return 'VictoriaMetrics';
+  if (type === 'prometheus') return 'Prometheus';
+  return 'InfluxDB';
+}
+
+function getFirstPage(type: string): string {
+  if (type === 'victoriametrics') return '/victoriametrics/query';
+  if (type === 'prometheus') return '/prometheus/query';
+  return '/influxdb/query';
 }
 
 export default function Layout({ children }: LayoutProps) {
@@ -69,7 +107,7 @@ export default function Layout({ children }: LayoutProps) {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch('/api/mode');
+        const res = await fetch(basePath + '/api/mode');
         if (res.ok) {
           const data = await res.json();
           if (data.mode === 'standalone') {
@@ -99,10 +137,28 @@ export default function Layout({ children }: LayoutProps) {
       } catch {
         setConnected(false);
       }
-    } else {
-      // Prometheus: test via proxy
+    } else if (activeConnection.type === 'victoriametrics') {
       try {
-        const url = `/proxy/prometheus/?target=${encodeURIComponent(activeConnection.url)}&path=/api/v1/status/buildinfo`;
+        const url = `${basePath}/proxy/victoriametrics/?target=${encodeURIComponent(activeConnection.url)}&path=/api/v1/status/buildinfo`;
+        const res = await fetch(url, {
+          headers: activeConnection.username ? {
+            'X-Proxy-Username': activeConnection.username,
+            'X-Proxy-Password': activeConnection.password || '',
+          } : {},
+        });
+        if (res.ok) {
+          const data = await res.json();
+          setVersion(data.data?.version || 'unknown');
+          setConnected(data.status === 'success');
+        } else {
+          setConnected(false);
+        }
+      } catch {
+        setConnected(false);
+      }
+    } else {
+      try {
+        const url = `${basePath}/proxy/prometheus/?target=${encodeURIComponent(activeConnection.url)}&path=/api/v1/status/buildinfo`;
         const res = await fetch(url, {
           headers: activeConnection.username ? {
             'X-Proxy-Username': activeConnection.username,
@@ -133,24 +189,21 @@ export default function Layout({ children }: LayoutProps) {
     setActiveConnection(conn);
     window.dispatchEvent(new CustomEvent('tidedb-connection-change', { detail: conn }));
 
-    // Navigate to the first page for the new connection type
     if (conn) {
       const currentPath = location.pathname;
-      const isOnWrongBackend =
-        (conn.type === 'influxdb' && currentPath.startsWith('/prometheus')) ||
-        (conn.type === 'prometheus' && (currentPath.startsWith('/influxdb') || currentPath === '/explore' || currentPath === '/admin' || currentPath === '/write' || currentPath === '/health'));
+      const connPrefix = conn.type === 'influxdb' ? '/influxdb' : conn.type === 'victoriametrics' ? '/victoriametrics' : '/prometheus';
+
+      const isOnWrongBackend = !currentPath.startsWith(connPrefix) && currentPath !== '/';
 
       if (isOnWrongBackend || currentPath === '/' || currentPath === '') {
-        if (conn.type === 'influxdb') {
-          navigate('/influxdb/query');
-        } else {
-          navigate('/prometheus/query');
-        }
+        navigate(getFirstPage(conn.type));
       }
     }
   }, [navigate, location.pathname]);
 
   const navLinks = getNavLinks(activeConnection);
+
+  let lastSection = '';
 
   const sidebarContent = (
     <div className="flex flex-col h-full">
@@ -168,32 +221,42 @@ export default function Layout({ children }: LayoutProps) {
         </div>
       </div>
 
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+      <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
         {activeConnection && (
           <div className="px-3 mb-3">
             <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-              {activeConnection.type === 'influxdb' ? 'InfluxDB' : 'Prometheus'}
+              {getBackendLabel(activeConnection.type)}
             </span>
           </div>
         )}
-        {navLinks.map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            onClick={() => setSidebarOpen(false)}
-            className={({ isActive }) =>
-              [
-                'flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150',
-                isActive
-                  ? 'bg-gray-800 text-white border-l-2 border-blue-500 pl-[10px]'
-                  : 'text-gray-400 hover:text-white hover:bg-gray-800 border-l-2 border-transparent pl-[10px]',
-              ].join(' ')
-            }
-          >
-            <Icon size={16} className="flex-shrink-0" />
-            {label}
-          </NavLink>
-        ))}
+        {navLinks.map(({ to, label, icon: Icon, section }) => {
+          const showSection = section && section !== lastSection;
+          if (showSection) lastSection = section!;
+          return (
+            <React.Fragment key={to}>
+              {showSection && (
+                <div className="px-3 pt-3 pb-1">
+                  <span className="text-[9px] font-semibold text-gray-600 uppercase tracking-widest">{section}</span>
+                </div>
+              )}
+              <NavLink
+                to={to}
+                onClick={() => setSidebarOpen(false)}
+                className={({ isActive }) =>
+                  [
+                    'flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors duration-150',
+                    isActive
+                      ? 'bg-gray-800 text-white border-l-2 border-blue-500 pl-[10px]'
+                      : 'text-gray-400 hover:text-white hover:bg-gray-800 border-l-2 border-transparent pl-[10px]',
+                  ].join(' ')
+                }
+              >
+                <Icon size={16} className="flex-shrink-0" />
+                {label}
+              </NavLink>
+            </React.Fragment>
+          );
+        })}
         {!activeConnection && (
           <div className="px-3 py-8 text-center">
             <p className="text-gray-500 text-xs">Add a connection below to get started</p>
