@@ -1,0 +1,84 @@
+name: Deploy Playground to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build for GitHub Pages
+        working-directory: ui
+        run: npx vite build --base /TideDB/playground/
+
+      - name: Prepare deployment
+        run: |
+          REPO_NAME="TideDB"
+          mkdir -p _site/playground
+
+          # Set __TSUI_BASE__ to the repo path for GitHub Pages
+          sed -i "s|window.__TSUI_BASE__=\"\"|window.__TSUI_BASE__=\"/${REPO_NAME}\"|" ui/dist/index.html
+
+          # Copy built assets into /playground/
+          cp -r ui/dist/* _site/playground/
+
+          # 404.html — SPA catch-all for playground routes,
+          # redirects non-playground routes to playground root.
+          # Insert a redirect guard before the closing </head> tag.
+          sed "s|</head>|<script>if(!location.pathname.startsWith('/${REPO_NAME}/playground'))location.replace('/${REPO_NAME}/playground/')</script></head>|" \
+            _site/playground/index.html > _site/404.html
+
+          # Root index.html redirects to playground
+          cat > _site/index.html <<EOF
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8" />
+            <meta http-equiv="refresh" content="0;url=/${REPO_NAME}/playground/" />
+            <title>Redirecting…</title>
+          </head>
+          <body>
+            <p>Redirecting to <a href="/${REPO_NAME}/playground/">Playground</a>…</p>
+          </body>
+          </html>
+          EOF
+
+          # .nojekyll prevents GitHub Pages from processing files
+          touch _site/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}playground/
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
