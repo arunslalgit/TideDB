@@ -1,0 +1,28 @@
+TimeseriesUI
+Copyright 2025 TimeseriesUI Contributors
+
+This software is an original work created independently.
+It is not derived from, and contains no code from, InfluxDB, Prometheus,
+VictoriaMetrics, or any other third-party project. It communicates with
+InfluxDB-compatible, Prometheus-compatible, and VictoriaMetrics-compatible
+databases solely through their published HTTP APIs.
+
+"InfluxDB" is a trademark of InfluxData, Inc.
+"Prometheus" is a trademark of The Linux Foundation.
+"VictoriaMetrics" is a trademark of VictoriaMetrics, Inc.
+TimeseriesUI is NOT affiliated with, endorsed by, or supported by
+InfluxData, Inc., the Prometheus Authors, or VictoriaMetrics, Inc.
+
+Third-party frontend dependencies (npm packages) are listed in ui/package.json
+and are governed by their respective licenses. Key dependencies include:
+
+  - React           (MIT License)      https://reactjs.org
+  - Vite            (MIT License)      https://vitejs.dev
+  - Tailwind CSS    (MIT License)      https://tailwindcss.com
+  - CodeMirror      (MIT License)      https://codemirror.net
+  - Recharts        (MIT License)      https://recharts.org
+  - Lucide React    (ISC License)      https://lucide.dev
+  - React Router    (MIT License)      https://reactrouter.com
+
+All npm dependencies are MIT or ISC licensed, which are compatible with
+the Apache License 2.0 under which this software is distributed.
