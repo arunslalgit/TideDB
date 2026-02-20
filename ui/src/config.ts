@@ -10,3 +10,7 @@ declare global {
 }
 
 export const basePath: string = window.__TSUI_BASE__ || '';
+
+// Playground mode is detected by the URL path.
+// When the user navigates to /playground/*, the SPA runs entirely with mock data.
+export const isPlaygroundMode: boolean = window.location.pathname.startsWith(basePath + '/playground');

@@ -1,5 +1,7 @@
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
+import { isPlaygroundMode } from './config';
+import PlaygroundApp from './pages/playground/PlaygroundApp';
 
 // InfluxDB pages
 import QueryExplorer from './pages/influxdb/QueryExplorer';
@@ -25,6 +27,13 @@ import VmExportImport from './pages/victoriametrics/VmExportImport';
 import VmAdmin from './pages/victoriametrics/VmAdmin';
 
 export default function App() {
+  // When the URL starts with /playground, the BrowserRouter basename is set to
+  // /playground and PlaygroundApp handles all routes with mock data.
+  if (isPlaygroundMode) {
+    return <PlaygroundApp />;
+  }
+
+  // Normal mode — real DB connections
   return (
     <Layout>
       <Routes>

@@ -170,6 +170,20 @@ func main() {
 	mux.HandleFunc(basePath+"/ui", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, uiPrefix, http.StatusMovedPermanently)
 	})
+
+	// ── Playground: serve the same SPA at /playground/* ─────────────────
+	// The SPA detects /playground in its route and activates playground mode
+	// with mock data entirely on the client side — no backend DB needed.
+	mux.HandleFunc(basePath+"/playground/", func(w http.ResponseWriter, r *http.Request) {
+		// Serve index.html for all playground paths — React Router handles routing.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Write(processedIndex)
+	})
+	mux.HandleFunc(basePath+"/playground", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, basePath+"/playground/", http.StatusMovedPermanently)
+	})
+
 	mux.HandleFunc(basePath+"/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == basePath+"/" || r.URL.Path == basePath {
 			http.Redirect(w, r, uiPrefix, http.StatusFound)
@@ -188,6 +202,7 @@ func main() {
 		displayHost = "localhost"
 	}
 	fmt.Printf("TimeseriesUI %s starting on %s://%s:%d%s/ui/\n", Version, scheme, displayHost, cfg.Port, basePath)
+	fmt.Printf("Playground available at %s://%s:%d%s/playground/\n", scheme, displayHost, cfg.Port, basePath)
 	if len(cfg.Connections) > 0 {
 		for _, c := range cfg.Connections {
 			fmt.Printf("  [%s] %s → %s\n", c.Type, c.Name, c.URL)
