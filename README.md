@@ -7,7 +7,7 @@ Add connections in the browser and switch between multiple backends — InfluxDB
 > **TimeseriesUI is NOT affiliated with, endorsed by, or supported by InfluxData, Inc., the Prometheus Authors, or VictoriaMetrics, Inc.**
 > "InfluxDB" is a trademark of InfluxData, Inc. "Prometheus" is a trademark of The Linux Foundation. "VictoriaMetrics" is a trademark of VictoriaMetrics, Inc.
 
----
+----
 
 ## Features
 
