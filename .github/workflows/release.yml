@@ -1,0 +1,67 @@
+name: Release Binaries
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Build UI
+        working-directory: ui
+        run: npm run build
+
+      - name: Build binaries
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/}"
+          LDFLAGS="-s -w -X main.version=${VERSION}"
+          mkdir -p release
+
+          platforms=(
+            "linux/amd64"
+            "linux/arm64"
+            "darwin/amd64"
+            "darwin/arm64"
+            "windows/amd64"
+          )
+
+          for platform in "${platforms[@]}"; do
+            GOOS="${platform%/*}"
+            GOARCH="${platform#*/}"
+            output="release/tidedb-${GOOS}-${GOARCH}"
+            if [ "$GOOS" = "windows" ]; then
+              output="${output}.exe"
+            fi
+            echo "Building ${output}..."
+            GOOS=$GOOS GOARCH=$GOARCH go build -ldflags "$LDFLAGS" -o "$output" .
+          done
+
+          # Create checksums
+          cd release
+          sha256sum * > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release/*

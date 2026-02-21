@@ -1,6 +1,8 @@
-# Build output (root-level only)
+# Build output
 /timeseriesui
 /timeseriesui.exe
+/bin/
+/release/
 
 # UI build artifacts (committed intentionally for embedded builds;
 # delete this line if you prefer to .gitignore dist and build locally)
